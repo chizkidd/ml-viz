@@ -1,6 +1,3 @@
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-![visitor badge](https://visitor-badge.laobi.icu/badge?page_id=chizkidd.ml-viz)
-
 # ml-viz
 
 Interactive explainers for ML, RL and LLM inference, built from real experiments. Static HTML, CSS and JavaScript, no framework and no tracking.
@@ -9,8 +6,8 @@ Interactive explainers for ML, RL and LLM inference, built from real experiments
 |---|---|---|
 | `inference-playground/` | Continuous batching, paged KV cache, decode roofline, engine vs vLLM. Real Tesla T4 numbers from [minivllm](https://github.com/chizkidd/minivllm). | ready |
 | `flashattention-tiling/` | Tile-by-tile FlashAttention with online softmax, verified against naive attention in the browser. Single file. | ready |
-| `igbo-tone-loss/` | Tone-mark loss in ASR on 21 Igbo clips: clip explorer, scoreboard with bootstrap intervals, mark types, a position-by-position alignment estimate with a confusion matrix, and method checks (resampling unit, CER vs tone loss, limitations). Data from [omniASR-igbo-blindspots](https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots). Analysis on [Github](https://github.com/chizkidd/igbo-asr-tonal-evaluation).| ready |
-| `td-lambda/` | TD(lambda), eligibility traces, deadly triad | planned |
+| `igbo-tone-loss/` | Tone-mark loss in ASR on 21 Igbo clips: clip explorer, scoreboard with bootstrap intervals, mark types, a position-by-position alignment estimate with a confusion matrix, and method checks (resampling unit, CER vs tone loss, limitations). Data from [omniASR-igbo-blindspots](https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots). | ready |
+| `td-lambda/` | TD(lambda) on the 19-state random walk (step through eligibility traces, sweep lambda and alpha), the w/2w example, and Baird's counterexample with toggles for function approximation, bootstrapping, off-policy data and TDC. Simulated live with fixed seeds. | ready |
 
 ## Publish with GitHub Pages
 1. Create a **public** repo named `ml-viz`, push this folder to `main`.
@@ -36,3 +33,8 @@ Create a folder, link `../shared/theme.css`, reuse the tokens (`--c-a`, `--c-b`,
 
 ## Igbo explorer data
 `igbo-tone-loss/rows.py` holds the 21 dataset rows (text only, no audio). `python3 igbo-tone-loss/build.py` rebuilds `index.html` from `template.html`. Mark counts use a rule that reproduces the dataset's expected and produced counts for all 21 rows: count each letter carrying a grave, acute, macron or dot below.
+
+## TD(lambda) page
+`td-lambda/src/sim.js` holds all the simulation code (seeded RNG, TD(lambda) with accumulating or replacing traces, the lambda sweep, Baird's counterexample with semi-gradient TD(0) and TDC). `python3 td-lambda/build.py` inlines it into `td-lambda/template.html` and writes `index.html`.
+
+`sh td-lambda/tests/run.sh` re-checks the JavaScript against an independent numpy implementation that uses the same random stream (needs node, python3 and numpy). Sweep values agree to about 1e-17 and the Baird runs agree exactly.

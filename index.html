@@ -14,6 +14,7 @@
   .vcard .tag { font: 600 11px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
   .vcard h2 { margin: 6px 0 6px; font-size: 1.25rem; }
   .vcard p { margin: 0 0 10px; color: var(--muted); font-size: .94rem; }
+  .cards > .card { margin-top: 0; }
   .vcard.soon { opacity: .62; cursor: default; }
   .vcard.soon:hover { transform: none; }
 </style>
@@ -39,11 +40,11 @@
       <p>What a speech recognizer does to Igbo tone marks, clip by clip, with four ways to score it and honest error bars on 21 recordings.</p>
       <span class="badge measured">measured</span> <span class="badge simulated">computed live</span>
     </a>
-    <div class="card vcard soon">
+    <a class="card vcard" href="td-lambda/">
       <div class="tag">Reinforcement learning</div><h2>TD(&lambda;) and the deadly triad</h2>
-      <p>Slide lambda, add function approximation and off-policy updates, and watch value estimates diverge.</p>
-      <span class="badge">coming soon</span>
-    </div>
+      <p>Watch eligibility traces spread credit backwards, sweep lambda on the 19-state random walk, then see Baird's counterexample diverge and TDC rescue it.</p>
+      <span class="badge simulated">computed live</span>
+    </a>
   </div>
   <footer class="site">Plain HTML, CSS and JavaScript. No build step needed to view; no tracking.</footer>
 </div>

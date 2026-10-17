@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TD(&lambda;) and the Deadly Triad</title>
+<meta name="description" content="Watch eligibility traces spread credit backwards, sweep lambda on the 19-state random walk, and see Baird's counterexample diverge when function approximation, bootstrapping and off-policy training meet.">
+<link rel="stylesheet" href="../shared/theme.css">
+<style>
+  .chart-wrap { overflow-x: auto; }
+  .chart-wrap svg { min-width: 560px; }
+  .stepline { font: .86rem var(--mono); background: var(--surface-2); padding: 10px 12px; border-radius: 10px; line-height: 1.65; overflow-x: auto; margin-top: 10px; }
+  .stepline b { color: var(--ink); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .pill { display: inline-block; font: 600 12px var(--sans); padding: 5px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
+  .pill.on { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+  .pill.good { border-color: var(--good); color: var(--good); background: color-mix(in srgb, var(--good) 10%, transparent); }
+  .mt { margin-top: 12px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 860px) { .split { grid-template-columns: minmax(0, 1fr); } }
+  .split > * { min-width: 0; }
+  #tbl2, #tbl3 { overflow-x: auto; }
+  table.t td.l, table.t th.l { text-align: left; }
+  table.t td.bad { color: var(--bad); font-weight: 700; }
+  table.t td.good { color: var(--good); font-weight: 700; }
+  table.t tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .legend i.line { height: 3px; width: 16px; border-radius: 2px; vertical-align: 3px; }
+  .ctl.wide { min-width: 200px; }
+  svg.chart .ink { fill: var(--ink); }
+  svg.chart .tick-true { stroke: var(--ink); stroke-width: 2.4; }
+  svg.chart text.num { font: 10px var(--mono); }
+  svg.chart text.on-fill { fill: var(--ink); }
+  .progress { height: 6px; border-radius: 4px; background: var(--surface-2); overflow: hidden; width: 160px; display: inline-block; vertical-align: middle; }
+  .progress > span { display: block; height: 100%; background: var(--accent); width: 0; }
+  ul.tight { margin: 6px 0 0; padding-left: 20px; }
+  ul.tight li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a href="../">&larr; ml-viz</a>
+    <span class="sp"></span>
+    <a href="https://chizkidd.github.io/RL-Sutton-Barto-notes/chapters/ch11-off-policy-methods-approximation.html" target="_blank" rel="noopener">my Ch. 11 notes</a>
+    <button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
+  </div>
+  <h1>TD(&lambda;) and the Deadly Triad</h1>
+  <p class="lede">TD learning updates a value estimate toward a guess built from the next estimate. Eligibility traces decide how far back one surprise reaches, and lambda is the dial. The last tab shows what goes wrong when you also approximate values with a function and train on data from a different policy. Everything here is <span class="badge simulated">computed live</span> in your browser from small simulations, with fixed random seeds so you can reproduce what you see.</p>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" aria-selected="true" data-p="p1">1. Credit spreading</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p2">2. Choosing lambda</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p3">3. The deadly triad</button>
+  </div>
+
+  <!-- ===== 1. CREDIT SPREADING ===== -->
+  <section class="panel" id="p1">
+    <div class="card">
+      <div class="small" style="margin-bottom:10px">A walker starts in the middle of 19 states and steps left or right. Falling off the left end pays &minus;1, off the right end pays +1, everything else pays 0 (undiscounted). The true value of each state runs from &minus;0.9 to +0.9. All estimates start at 0, so the first surprise happens at the very end of an episode.</div>
+      <div class="controls">
+        <div class="ctl wide"><label>lambda <span class="val" id="vLam">0.80</span></label><input type="range" id="rLam" min="0" max="1" step="0.05" value="0.8"></div>
+        <div class="ctl wide"><label>step size alpha <span class="val" id="vAlp">0.30</span></label><input type="range" id="rAlp" min="0.05" max="0.5" step="0.05" value="0.3"></div>
+        <div class="ctl" style="min-width:auto"><label>Trace</label><div class="seg" id="sKind"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Walk</label><div class="seg" id="sPol"></div></div>
+      </div>
+      <div class="row">
+        <button class="btn" id="bNew" type="button">New episode</button>
+        <button class="btn" id="bStep" type="button">Step</button>
+        <button class="btn primary" id="bPlay" type="button">Play</button>
+        <button class="btn" id="bFin" type="button">Finish episode</button>
+        <button class="btn" id="bReset" type="button">Reset values</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="chart-wrap"><svg class="chart" id="c1" viewBox="0 0 760 340" role="img" aria-label="Value estimates, eligibility traces and last update for each of the 19 states"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--c-c)"></i>value estimate</span>
+        <span><i class="line" style="background:var(--ink)"></i>true value</span>
+        <span><i style="background:var(--c-a)"></i>eligibility trace</span>
+        <span><i style="background:var(--c-b)"></i><i style="background:var(--bad)"></i>last update (up, down)</span>
+      </div>
+      <div class="stepline" id="stepline"></div>
+      <div class="grid kpis mt" id="k1"></div>
+    </div>
+    <div class="callout" id="n1"></div>
+  </section>
+
+  <!-- ===== 2. CHOOSING LAMBDA ===== -->
+  <section class="panel" id="p2" hidden>
+    <div class="card">
+      <div class="small" style="margin-bottom:10px">Same walk, now measuring how good the estimates are. For every (lambda, alpha) pair the error is the root-mean-square gap to the true values at the end of each of the first 10 episodes, averaged over many independent runs. Every curve sees the same random episodes, so differences between curves are not sampling luck. Errors are clipped at 1.0 (a run that blows up counts as 1.0).</div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Trace</label><div class="seg" id="sKind2"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Runs averaged</label><div class="seg" id="sRuns"></div></div>
+        <button class="btn primary" id="bSweep" type="button">Run sweep</button>
+        <span class="small" id="sweepMsg"></span>
+        <span class="progress" id="prog" hidden><span></span></span>
+      </div>
+    </div>
+    <div class="split">
+      <div class="card">
+        <h3>Error after 10 episodes, by step size</h3>
+        <div class="chart-wrap"><svg class="chart" id="c2a" viewBox="0 0 560 330"></svg></div>
+        <div class="legend" id="lg2"></div>
+      </div>
+      <div class="card">
+        <h3>Best error each lambda can reach</h3>
+        <div class="chart-wrap"><svg class="chart" id="c2b" viewBox="0 0 400 330" style="min-width:380px"></svg></div>
+        <div class="small" id="best2"></div>
+      </div>
+    </div>
+    <div class="card mt"><h3>Lowest error per lambda</h3><div id="tbl2"></div></div>
+    <div class="callout mt" id="n2"></div>
+  </section>
+
+  <!-- ===== 3. THE DEADLY TRIAD ===== -->
+  <section class="panel" id="p3" hidden>
+    <div class="card">
+      <h2>The smallest example: w and 2w</h2>
+      <div class="small">Two states share one weight: v(s<sub>1</sub>) = w and v(s<sub>2</sub>) = 2w. The only transition we ever see goes from s<sub>1</sub> to s<sub>2</sub> with reward 0, and we update after each one: w &larr; w + &alpha;(&gamma;&middot;2w &minus; w). The update never touches s<sub>2</sub>'s own error, so nothing pulls w back. Each update multiplies w by 1 + &alpha;(2&gamma; &minus; 1).</div>
+      <div class="controls mt">
+        <div class="ctl wide"><label>discount gamma <span class="val" id="vG">0.90</span></label><input type="range" id="rG" min="0.3" max="1" step="0.01" value="0.9"></div>
+        <div class="ctl wide"><label>step size alpha <span class="val" id="vA2">0.10</span></label><input type="range" id="rA2" min="0.01" max="0.5" step="0.01" value="0.1"></div>
+      </div>
+      <div class="chart-wrap"><svg class="chart" id="c3a" viewBox="0 0 760 240"></svg></div>
+      <div class="stepline" id="two"></div>
+    </div>
+
+    <div class="card">
+      <h2>Baird's counterexample</h2>
+      <div class="split">
+        <div>
+          <div class="small">Seven states and two actions. <b>Dashed</b> jumps to one of states 1 to 6 at random. <b>Solid</b> goes to state 7. All rewards are 0, so every true value is 0. We want to learn the value of the policy that always picks solid, but the data comes from a behaviour policy that picks dashed 6/7 of the time. With linear features, v(s<sub>i</sub>) = 2w<sub>i</sub> + w<sub>8</sub> for states 1 to 6 and v(s<sub>7</sub>) = w<sub>7</sub> + 2w<sub>8</sub>, so 8 weights describe 7 values and zero error is reachable. Start: w = (1,1,1,1,1,1,10,1), gamma = 0.99.</div>
+        </div>
+        <div class="chart-wrap"><svg class="chart" id="c3m" viewBox="0 0 380 150" style="min-width:320px" role="img" aria-label="Diagram of the seven-state Baird MDP"></svg></div>
+      </div>
+      <div class="controls mt">
+        <div class="ctl" style="min-width:auto"><label>Function approximation</label><div class="seg" id="tFa"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Bootstrapping</label><div class="seg" id="tBoot"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Training data</label><div class="seg" id="tDist"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Algorithm</label><div class="seg" id="tAlgo"></div></div>
+        <div class="ctl" style="min-width:auto"><label>step size alpha</label><div class="seg" id="tAlpha"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Steps</label><div class="seg" id="tSteps"></div></div>
+        <button class="btn" id="tSeed" type="button">New random seed</button>
+      </div>
+      <div class="row" id="chips"></div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <h3 style="margin:0">Weights over time (signed log scale)</h3>
+        <div class="row"><button class="btn" id="tPlay" type="button">Replay</button><span class="small" id="tN"></span></div>
+      </div>
+      <input type="range" id="tScrub" min="0" max="3000" step="1" value="3000" style="width:100%" aria-label="Show the first n steps">
+      <div class="chart-wrap"><svg class="chart" id="c3b" viewBox="0 0 760 320"></svg></div>
+      <div class="legend">
+        <span><i class="line" style="background:var(--muted)"></i>w<sub>1</sub> to w<sub>6</sub> (or all 7 tabular weights except w<sub>7</sub>)</span>
+        <span><i class="line" style="background:var(--c-a)"></i>w<sub>7</sub></span>
+        <span><i class="line" style="background:var(--c-c)"></i>w<sub>8</sub> (linear only)</span>
+      </div>
+      <div class="grid kpis mt" id="k3"></div>
+      <div class="stepline" id="res3"></div>
+    </div>
+    <div class="card">
+      <h3>The same experiment, seven ways</h3>
+      <div class="small" style="margin-bottom:8px">Each row is one run of 3000 steps with alpha = 0.01 and seed 1 (I checked seeds 1 to 5 and they tell the same story). The number is the largest value estimate in absolute terms at the end; the true value is 0 everywhere.</div>
+      <div id="tbl3"></div>
+    </div>
+    <div class="callout mt" id="n3"></div>
+  </section>
+
+  <footer class="site">Setup follows Sutton and Barto, <i>Reinforcement Learning: An Introduction</i>, 2nd ed.: the 19-state random walk and TD(lambda) (ch. 12), and the w/2w example, Baird's counterexample, the deadly triad and gradient-TD (TDC) in ch. 11. Code for the simulations is in <span class="mono">td-lambda/src/sim.js</span>; its sweep and Baird runs were checked against an independent Python implementation using the same random stream. The 19-state results are my own runs, not copied from the book's figures.</footer>
+</div>
+
+<script>
+/*SIM*/
+</script>
+<script>
+(function () {
+'use strict';
+const S = window.TDSIM;
+const $ = (id) => document.getElementById(id);
+const kpi = (cls, v, l) => `<div class="kpi ${cls || ''}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+const sci = (x) => (!isFinite(x) ? 'overflow' : Math.abs(x) >= 1e4 || (Math.abs(x) < 1e-2 && x !== 0) ? x.toExponential(2) : x.toFixed(Math.abs(x) >= 100 ? 0 : 2));
+const NS = S.N;
+
+$('themeBtn').onclick = () => {
+  const cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+};
+const seen = {};
+document.querySelectorAll('#tabs .tab').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('#tabs .tab').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+  document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.id !== b.dataset.p; });
+  stopPlay(); stopT();
+  if (!seen[b.dataset.p]) { seen[b.dataset.p] = true; if (b.dataset.p === 'p2') runSweep(); if (b.dataset.p === 'p3') { drawTwo(); drawMdp(); runBaird(); drawTable(); } }
+});
+function seg(id, vals, cur, cb, label) {
+  $(id).innerHTML = vals.map((v) => `<button data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label ? label(v) : v}</button>`).join('');
+  $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cb(b.dataset.v); });
+}
+const colorMix = (t) => `color-mix(in srgb, var(--c-a) ${Math.round((1 - t) * 100)}%, var(--c-c))`;
+
+/* =========================================================
+   TAB 1: stepping through one episode
+   ========================================================= */
+const P1 = { lambda: 0.8, alpha: 0.3, kind: 'acc', policy: 'right', seed: 11 };
+let st = null, timer = null, walkRng = S.mulberry32(P1.seed);
+
+function resetValues() {
+  st = { w: new Float64Array(NS), e: new Float64Array(NS), ep: null, k: 0, delta: null, dw: new Float64Array(NS), episodes: 0, done: true, reward: 0, line: 'Press Step or Play to start the first episode.' };
+  newEpisode(true);
+}
+function newEpisode(quiet) {
+  st.ep = S.walkEpisode(walkRng, P1.policy); st.k = 0; st.e = new Float64Array(NS); st.dw = new Float64Array(NS); st.delta = null; st.done = false; st.reward = 0;
+  if (!quiet) st.line = 'New episode. The walker starts in state 10 and all traces are zero.';
+  draw1();
+}
+function stepOnce() {
+  if (st.done) newEpisode(true);
+  const n = st.ep.states.length, k = st.k, last = k === n - 1;
+  const s = st.ep.states[k], s2 = last ? -1 : st.ep.states[k + 1], r = last ? st.ep.term : 0;
+  const before = st.w[s], v2 = s2 < 0 ? 0 : st.w[s2];
+  const delta = S.tdStep(st.w, st.e, s, s2, r, P1);
+  for (let i = 0; i < NS; i++) st.dw[i] = P1.alpha * delta * st.e[i];
+  st.delta = delta; st.k++;
+  const to = s2 < 0 ? (r > 0 ? 'off the right end' : 'off the left end') : `state ${s2 + 1}`;
+  st.line = `<b>step ${k + 1}</b>: state ${s + 1} &rarr; ${to}, R = ${r}.<br>&delta; = R + v(next) &minus; v(state) = ${r} + ${v2.toFixed(2)} &minus; ${before.toFixed(2)} = <b>${delta.toFixed(3)}</b>. Every state moves by &alpha;&middot;&delta;&middot;trace.`;
+  if (last) { st.done = true; st.episodes++; st.reward = r; st.line += `<br><b>Episode over</b> (${r > 0 ? '+1' : '&minus;1'}). Press Step for a new episode: values stay, traces reset.`; }
+  draw1();
+}
+function finish() { stopPlay(); if (st.done) newEpisode(true); while (!st.done) stepOnce(); }
+function stopPlay() { if (timer) { clearInterval(timer); timer = null; $('bPlay').textContent = 'Play'; } }
+function play() { if (timer) { stopPlay(); return; } $('bPlay').textContent = 'Pause'; timer = setInterval(stepOnce, 380); }
+
+function draw1() {
+  const W = 760, x0 = 44, cw = (W - 2 * x0) / NS, zero = 100, sc = 78;
+  const cx = (i) => x0 + cw * (i + 0.5);
+  let b = '';
+  // value panel
+  b += `<line class="axis" x1="${x0}" x2="${W - x0}" y1="${zero}" y2="${zero}"/>`;
+  [-1, -0.5, 0.5, 1].forEach((v) => { b += `<line class="grid-l" x1="${x0}" x2="${W - x0}" y1="${zero - v * sc}" y2="${zero - v * sc}"/><text x="${x0 - 6}" y="${zero - v * sc + 4}" text-anchor="end">${v > 0 ? '+' : '&minus;'}${Math.abs(v)}</text>`; });
+  b += `<text x="${x0 - 6}" y="${zero + 4}" text-anchor="end">0</text>`;
+  for (let i = 0; i < NS; i++) {
+    const v = Math.max(-1.2, Math.min(1.2, st.w[i])), h = v * sc, bw = cw * 0.62;
+    b += `<rect x="${cx(i) - bw / 2}" y="${h >= 0 ? zero - h : zero}" width="${bw}" height="${Math.abs(h)}" fill="var(--c-c)" opacity=".85" rx="2"/>`;
+    b += `<line class="tick-true" x1="${cx(i) - cw * 0.42}" x2="${cx(i) + cw * 0.42}" y1="${zero - S.TRUE_V[i] * sc}" y2="${zero - S.TRUE_V[i] * sc}"/>`;
+  }
+  b += `<text x="${x0 - 36}" y="14" class="lbl-strong">value</text>`;
+  // terminals
+  b += `<text x="${x0 - 8}" y="${204 + 20}" text-anchor="end" class="lbl-strong">&larr; &minus;1</text><text x="${W - x0 + 8}" y="${204 + 20}" class="lbl-strong">+1 &rarr;</text>`;
+  // walker
+  if (st.ep) {
+    const cur = st.done ? null : st.ep.states[st.k];
+    if (cur != null) b += `<path d="M${cx(cur) - 8},180 L${cx(cur) + 8},180 L${cx(cur)},196 Z" fill="var(--ink)"/>`;
+    else b += `<text x="${st.reward > 0 ? W - x0 + 8 : x0 - 8}" y="190" text-anchor="${st.reward > 0 ? 'start' : 'end'}" class="lbl-strong">ended</text>`;
+  }
+  // trace strip
+  b += `<text x="${x0 - 36}" y="${204 - 6}" class="lbl-strong">trace</text>`;
+  for (let i = 0; i < NS; i++) {
+    const e = st.e[i];
+    b += `<rect x="${cx(i) - cw / 2 + 1}" y="204" width="${cw - 2}" height="30" fill="var(--c-a)" fill-opacity="${Math.min(1, e) * 0.92}" stroke="var(--line)" rx="3"/>`;
+    if (e > 0.005) b += `<text class="num" x="${cx(i)}" y="253" text-anchor="middle">${e.toFixed(2)}</text>`;
+  }
+  // update strip
+  b += `<text x="${x0 - 36}" y="${264 - 6}" class="lbl-strong">last update</text>`;
+  const mx = Math.max(0.05, ...Array.from(st.dw, Math.abs));
+  for (let i = 0; i < NS; i++) {
+    const d = st.dw[i], a = Math.min(1, Math.abs(d) / mx);
+    b += `<rect x="${cx(i) - cw / 2 + 1}" y="264" width="${cw - 2}" height="30" fill="${d >= 0 ? 'var(--c-b)' : 'var(--bad)'}" fill-opacity="${Math.abs(d) < 1e-9 ? 0 : 0.15 + 0.8 * a}" stroke="var(--line)" rx="3"/>`;
+    if (Math.abs(d) > 0.0005) b += `<text class="num" x="${cx(i)}" y="313" text-anchor="middle">${d > 0 ? '+' : '&minus;'}${Math.abs(d).toFixed(2)}</text>`;
+    b += `<text x="${cx(i)}" y="334" text-anchor="middle">${i + 1}</text>`;
+  }
+  $('c1').innerHTML = b;
+  $('stepline').innerHTML = st.line;
+  $('k1').innerHTML = kpi('', st.episodes, 'episodes finished') + kpi('', st.done ? '&mdash;' : `${st.k + 1} / ${st.ep.states.length}`, 'step in this episode') +
+    kpi('a', st.delta == null ? '&mdash;' : st.delta.toFixed(3), 'last TD error (delta)') + kpi('c', S.rms(st.w).toFixed(3), 'RMS error vs true values (0.548 at the start)');
+  note1();
+}
+function note1() {
+  const l = P1.lambda, a = P1.alpha;
+  let t;
+  if (P1.policy === 'right') {
+    const ks = [0, 1, 2, 3, 4].map((k) => (a * Math.pow(l, k)).toFixed(3));
+    t = `<b>Always-right episode, closed form.</b> Every earlier TD error is 0 because all estimates start at 0, so only the last step (delta = +1) changes anything. State 19 gets alpha = ${a.toFixed(2)}, and the state k steps earlier gets alpha&middot;lambda<sup>k</sup>: ${ks.join(', ')}, &hellip; down to state 10. At lambda = 0 only state 19 moves, which is plain TD(0). At lambda = 1 every state on the path gets the full alpha, like a Monte Carlo update. Check it: press Finish episode on a fresh episode, with values reset.`;
+  } else {
+    t = `<b>Random walk.</b> The walker wanders and revisits states, so traces add up (accumulating) or are capped at 1 (replacing). Watch what a single end-of-episode surprise does to everything the trace still remembers. Lambda trades bias for variance: small lambda leans on neighbouring estimates, large lambda leans on the actual outcome.`;
+  }
+  $('n1').innerHTML = t;
+}
+seg('sKind', ['acc', 'rep'], P1.kind, (v) => { P1.kind = v; }, (v) => (v === 'acc' ? 'accumulating' : 'replacing'));
+seg('sPol', ['right', 'random', 'left'], P1.policy, (v) => { P1.policy = v; resetValues(); }, (v) => ({ right: 'always right', random: 'random', left: 'always left' }[v]));
+$('rLam').oninput = (e) => { P1.lambda = +e.target.value; $('vLam').textContent = P1.lambda.toFixed(2); note1(); };
+$('rAlp').oninput = (e) => { P1.alpha = +e.target.value; $('vAlp').textContent = P1.alpha.toFixed(2); note1(); };
+$('bNew').onclick = () => { stopPlay(); newEpisode(false); };
+$('bStep').onclick = () => { stopPlay(); stepOnce(); };
+$('bPlay').onclick = play;
+$('bFin').onclick = finish;
+$('bReset').onclick = () => { stopPlay(); resetValues(); };
+resetValues();
+
+/* =========================================================
+   TAB 2: lambda sweep
+   ========================================================= */
+const LAMS = [0, 0.4, 0.8, 0.9, 0.95, 0.975, 0.99, 1];
+const ALPHAS = [0.01, 0.025]; for (let a = 0.05; a < 1.0001; a += 0.05) ALPHAS.push(Math.round(a * 100) / 100);
+const P2 = { kind: 'acc', runs: 50 };
+let sweepToken = 0, sweepRes = null;
+seg('sKind2', ['acc', 'rep'], P2.kind, (v) => { P2.kind = v; runSweep(); }, (v) => (v === 'acc' ? 'accumulating' : 'replacing'));
+seg('sRuns', [20, 50, 100], P2.runs, (v) => { P2.runs = +v; runSweep(); });
+$('bSweep').onclick = runSweep;
+
+function runSweep() {
+  const token = ++sweepToken, data = S.sweepPrepare(P2.runs, 10, 2026), res = LAMS.map(() => []);
+  const t0 = performance.now(); let li = 0;
+  $('prog').hidden = false; $('sweepMsg').textContent = 'running';
+  function chunk() {
+    if (token !== sweepToken) return;
+    const l = LAMS[li];
+    res[li] = ALPHAS.map((a) => S.sweepCell(data, l, a, P2.kind, 1.0));
+    li++; $('prog').firstElementChild.style.width = (li / LAMS.length * 100) + '%';
+    if (li < LAMS.length) setTimeout(chunk, 0);
+    else { sweepRes = { res, kind: P2.kind, runs: P2.runs }; $('prog').hidden = true; $('sweepMsg').textContent = `${P2.runs} runs x 10 episodes, ${((performance.now() - t0) / 1000).toFixed(1)} s`; drawSweep(); }
+  }
+  setTimeout(chunk, 0);
+}
+function drawSweep() {
+  const { res } = sweepRes, w = 560, h = 330, m = { l: 46, r: 14, t: 28, b: 42 }, y0 = 0.2, y1 = 1.0;
+  const sx = (a) => m.l + a * (w - m.l - m.r), sy = (v) => m.t + (1 - (Math.min(v, y1) - y0) / (y1 - y0)) * (h - m.t - m.b);
+  let b = '';
+  [0.2, 0.4, 0.6, 0.8, 1.0].forEach((v) => { b += `<line class="grid-l" x1="${m.l}" x2="${w - m.r}" y1="${sy(v)}" y2="${sy(v)}"/><text x="${m.l - 6}" y="${sy(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`; });
+  [0, 0.25, 0.5, 0.75, 1].forEach((a) => { b += `<text x="${sx(a)}" y="${h - m.b + 16}" text-anchor="middle">${a}</text>`; });
+  const start = Math.sqrt(0.3);
+  b += `<line x1="${m.l}" x2="${w - m.r}" y1="${sy(start)}" y2="${sy(start)}" stroke="var(--muted)" stroke-dasharray="5 4"/><text x="${w - m.r}" y="${sy(start) - 5}" text-anchor="end">error before any learning (0.548)</text>`;
+  b += `<line class="axis" x1="${m.l}" x2="${w - m.r}" y1="${h - m.b}" y2="${h - m.b}"/><text x="${(m.l + w - m.r) / 2}" y="${h - 6}" text-anchor="middle">step size alpha</text><text x="4" y="10">RMS error after 10 episodes</text>`;
+  res.forEach((row, i) => {
+    const c = colorMix(i / (LAMS.length - 1));
+    b += `<path d="${row.map((v, j) => `${j ? 'L' : 'M'}${sx(ALPHAS[j]).toFixed(1)},${sy(v).toFixed(1)}`).join(' ')}" fill="none" style="stroke:${c}" stroke-width="2.4" stroke-linejoin="round"/>`;
+  });
+  $('c2a').innerHTML = b;
+  $('lg2').innerHTML = LAMS.map((l, i) => `<span><i class="line" style="background:${colorMix(i / (LAMS.length - 1))}"></i>&lambda; = ${l}</span>`).join('');
+  // best per lambda
+  const best = res.map((row) => { let k = 0; row.forEach((v, j) => { if (v < row[k]) k = j; }); return { a: ALPHAS[k], v: row[k] }; });
+  const bw = 400, bh = 330, bm = { l: 46, r: 14, t: 28, b: 50 };
+  const bx = (i) => bm.l + (i + 0.5) / LAMS.length * (bw - bm.l - bm.r), by = (v) => bm.t + (1 - (v - 0.2) / 0.4) * (bh - bm.t - bm.b);
+  let c = '';
+  [0.2, 0.3, 0.4, 0.5, 0.6].forEach((v) => { c += `<line class="grid-l" x1="${bm.l}" x2="${bw - bm.r}" y1="${by(v)}" y2="${by(v)}"/><text x="${bm.l - 6}" y="${by(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`; });
+  c += `<line class="axis" x1="${bm.l}" x2="${bw - bm.r}" y1="${bh - bm.b}" y2="${bh - bm.b}"/><text x="${(bm.l + bw - bm.r) / 2}" y="${bh - 6}" text-anchor="middle">lambda (evenly spaced, not to scale)</text><text x="4" y="10">best RMS error</text>`;
+  const lo = best.reduce((k, v, i) => (v.v < best[k].v ? i : k), 0);
+  c += `<path d="${best.map((p, i) => `${i ? 'L' : 'M'}${bx(i).toFixed(1)},${by(p.v).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  best.forEach((p, i) => { c += `<circle cx="${bx(i)}" cy="${by(p.v)}" r="${i === lo ? 6 : 4}" style="fill:${colorMix(i / (LAMS.length - 1))}" stroke="var(--ink)" stroke-width="${i === lo ? 2 : 1}"/><text x="${bx(i)}" y="${bh - bm.b + 16}" text-anchor="middle">${LAMS[i]}</text>`; });
+  $('c2b').innerHTML = c;
+  $('best2').innerHTML = `Lowest error in this run: <b>lambda = ${LAMS[lo]}</b> at alpha = ${best[lo].a}, RMS ${best[lo].v.toFixed(3)}.`;
+  $('tbl2').innerHTML = `<table class="t"><thead><tr><th class="l">lambda</th>${LAMS.map((l) => `<th>${l}</th>`).join('')}</tr></thead><tbody><tr><td class="l">best alpha</td>${best.map((p) => `<td>${p.a}</td>`).join('')}</tr><tr><td class="l">best RMS error</td>${best.map((p, i) => `<td${i === lo ? ' class="good"' : ''}>${p.v.toFixed(3)}</td>`).join('')}</tr></tbody></table>`;
+  const e0 = best[0].v, e1 = best[LAMS.length - 1].v;
+  $('n2').innerHTML = `<b>Reading it.</b> In this run, lambda = 0 (TD(0)) bottoms out at ${e0.toFixed(3)} and lambda = 1 at ${e1.toFixed(3)} (${P2.kind === 'acc' ? 'accumulating traces' : 'replacing traces'}), with the lowest error at an intermediate lambda. Large lambda needs small alpha: with a long trace one surprise is applied to many states at once, so the stable step size shrinks. The step sizes tried run from 0.01 to 1, so a curve whose best point sits at the left edge could improve slightly with an even smaller alpha. The result depends on the task and on how many episodes you average over; this is one 19-state walk, not a rule for tuning lambda elsewhere.`;
+}
+
+/* =========================================================
+   TAB 3: w and 2w, Baird
+   ========================================================= */
+let two = { g: 0.9, a: 0.1 };
+$('rG').oninput = (e) => { two.g = +e.target.value; $('vG').textContent = two.g.toFixed(2); drawTwo(); };
+$('rA2').oninput = (e) => { two.a = +e.target.value; $('vA2').textContent = two.a.toFixed(2); drawTwo(); };
+function drawTwo() {
+  const steps = 60, run = S.twoStateRun(10, two.a, two.g, steps), f = S.twoStateGrowth(two.a, two.g);
+  const w = 760, h = 240, m = { l: 62, r: 16, t: 26, b: 38 };
+  const lo = Math.log10(Math.min(...run)) - 0.15, hi = Math.log10(Math.max(...run)) + 0.15, span = Math.max(hi - lo, 0.8), mid = (lo + hi) / 2;
+  const a0 = mid - span / 2, a1 = mid + span / 2;
+  const sx = (k) => m.l + k / steps * (w - m.l - m.r), sy = (v) => h - m.b - (Math.log10(v) - a0) / (a1 - a0) * (h - m.t - m.b);
+  let b = '';
+  for (let e = Math.ceil(a0); e <= Math.floor(a1); e++) b += `<line class="grid-l" x1="${m.l}" x2="${w - m.r}" y1="${sy(Math.pow(10, e))}" y2="${sy(Math.pow(10, e))}"/><text x="${m.l - 6}" y="${sy(Math.pow(10, e)) + 4}" text-anchor="end">${Math.pow(10, e) >= 1 ? Math.pow(10, e).toLocaleString('en-US') : Math.pow(10, e)}</text>`;
+  [0, 20, 40, 60].forEach((k) => { b += `<text x="${sx(k)}" y="${h - m.b + 16}" text-anchor="middle">${k}</text>`; });
+  b += `<line class="axis" x1="${m.l}" x2="${w - m.r}" y1="${h - m.b}" y2="${h - m.b}"/><text x="${(m.l + w - m.r) / 2}" y="${h - 4}" text-anchor="middle">updates</text><text x="4" y="10">w (log scale)</text>`;
+  b += `<line x1="${m.l}" x2="${w - m.r}" y1="${sy(10)}" y2="${sy(10)}" stroke="var(--muted)" stroke-dasharray="4 4"/>`;
+  const up = f > 1 + 1e-12, col = up ? 'var(--bad)' : f < 1 - 1e-12 ? 'var(--good)' : 'var(--ink)';
+  b += `<path d="${run.map((v, k) => `${k ? 'L' : 'M'}${sx(k).toFixed(1)},${sy(v).toFixed(1)}`).join(' ')}" fill="none" stroke="${col}" stroke-width="2.8"/>`;
+  $('c3a').innerHTML = b;
+  $('two').innerHTML = `growth per update = 1 + &alpha;(2&gamma; &minus; 1) = 1 + ${two.a.toFixed(2)} &times; (${(2 * two.g - 1).toFixed(2)}) = <b>${f.toFixed(4)}</b> &nbsp;&rarr;&nbsp; w after ${steps} updates = <b>${sci(run[steps])}</b> (started at 10). ${up ? '<span class="bad">Diverges.</span>' : f < 1 - 1e-12 ? '<span class="ok" style="color:var(--good);font-weight:700">Shrinks.</span>' : 'Stays at 10.'} The turning point is &gamma; = 0.5, independent of alpha.`;
+}
+
+function drawMdp() {
+  const xs = (i) => 28 + i * 60; let b = '';
+  b += `<defs><marker id="ah" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--muted)"/></marker><marker id="ah2" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--c-a)"/></marker></defs>`;
+  for (let i = 0; i < 6; i++) b += `<circle cx="${xs(i)}" cy="24" r="14" fill="var(--surface-2)" stroke="var(--line)"/><text x="${xs(i)}" y="28" text-anchor="middle" class="lbl-strong">${i + 1}</text><text x="${xs(i)}" y="51" text-anchor="middle" style="font-size:9px">2w${i + 1}+w8</text>`;
+  const L = xs(0) - 16, R = xs(5) + 16, cx = (L + R) / 2;
+  b += `<path d="M${L},62 L${L},68 L${R},68 L${R},62" fill="none" stroke="var(--muted)"/>`;
+  b += `<line x1="${cx - 30}" y1="106" x2="${cx - 30}" y2="72" stroke="var(--muted)" stroke-dasharray="4 3" stroke-width="1.6" marker-end="url(#ah)"/>`;
+  b += `<line x1="${cx + 30}" y1="72" x2="${cx + 30}" y2="106" stroke="var(--c-a)" stroke-width="2" marker-end="url(#ah2)"/>`;
+  b += `<text x="${cx - 38}" y="88" text-anchor="end" style="font-size:10px">dashed, 6/7:</text><text x="${cx - 38}" y="101" text-anchor="end" style="font-size:10px">random state 1 to 6</text>`;
+  b += `<text x="${cx + 38}" y="88" style="font-size:10px;fill:var(--c-a)">solid, 1/7:</text><text x="${cx + 38}" y="101" style="font-size:10px;fill:var(--c-a)">to state 7</text>`;
+  b += `<circle cx="${cx}" cy="124" r="14" fill="color-mix(in srgb, var(--c-a) 22%, var(--surface))" stroke="var(--c-a)"/><text x="${cx}" y="128" text-anchor="middle" class="lbl-strong">7</text><text x="${cx + 22}" y="128" style="font-size:9px">w7+2w8</text>`;
+  $('c3m').innerHTML = b;
+}
+
+const T = { tab: false, boot: true, dist: 'off', algo: 'td', alpha: 0.01, steps: 3000, seed: 1 };
+let tr = null, tTimer = null;
+seg('tFa', ['lin', 'tab'], 'lin', (v) => { T.tab = v === 'tab'; runBaird(); }, (v) => (v === 'lin' ? 'linear features' : 'tabular'));
+seg('tBoot', ['yes', 'no'], 'yes', (v) => { T.boot = v === 'yes'; runBaird(); }, (v) => (v === 'yes' ? 'bootstrap (TD)' : 'no bootstrap'));
+seg('tDist', ['off', 'on', 'uniform'], 'off', (v) => { T.dist = v; runBaird(); }, (v) => ({ off: 'off-policy', on: 'on-policy', uniform: 'uniform sweeps' }[v]));
+seg('tAlgo', ['td', 'tdc'], 'td', (v) => { T.algo = v; runBaird(); }, (v) => (v === 'td' ? 'semi-gradient TD(0)' : 'TDC (gradient-TD)'));
+seg('tAlpha', [0.002, 0.005, 0.01, 0.02], T.alpha, (v) => { T.alpha = +v; runBaird(); });
+seg('tSteps', [1000, 3000, 10000], T.steps, (v) => { T.steps = +v; runBaird(); });
+$('tSeed').onclick = () => { T.seed++; runBaird(); };
+$('tPlay').onclick = () => { if (tTimer) { stopT(); return; } playT(); };
+$('tScrub').oninput = (e) => { stopT(); drawBaird(+e.target.value); };
+function stopT() { if (tTimer) { cancelAnimationFrame(tTimer); tTimer = null; $('tPlay').textContent = 'Replay'; } }
+function playT() {
+  let n = 0; const total = T.steps, per = Math.max(1, Math.round(total / 150));
+  $('tPlay').textContent = 'Stop';
+  (function tick() { n = Math.min(total, n + per); $('tScrub').value = n; drawBaird(n); if (n < total) tTimer = requestAnimationFrame(tick); else { tTimer = null; $('tPlay').textContent = 'Replay'; } })();
+}
+function runBaird() {
+  stopT();
+  tr = S.bairdRun({ dist: T.dist, tab: T.tab, boot: T.boot, algo: T.algo, alpha: T.alpha, steps: T.steps, seed: T.seed });
+  $('tScrub').max = T.steps; $('tScrub').value = T.steps;
+  drawBaird(T.steps);
+}
+function slog(y) { return Math.sign(y) * Math.log10(1 + Math.abs(y)); }
+function drawBaird(n) {
+  const d = tr.W[0].length, w = 760, h = 320, m = { l: 62, r: 14, t: 28, b: 38 };
+  let mx = 12; for (let k = 0; k <= n; k++) for (let i = 0; i < d; i++) mx = Math.max(mx, Math.abs(tr.W[k][i]));
+  const top = Math.max(1.2, slog(mx) * 1.05), cap = Math.pow(10, top) - 1;
+  const sx = (k) => m.l + k / T.steps * (w - m.l - m.r), sy = (v) => m.t + (1 - (slog(v) + top) / (2 * top)) * (h - m.t - m.b);
+  let b = '';
+  const ticks = [0]; for (let e = 0; Math.pow(10, e) <= cap; e += (top > 6 ? 3 : 1)) { ticks.push(Math.pow(10, e), -Math.pow(10, e)); }
+  ticks.forEach((v) => { b += `<line class="grid-l" x1="${m.l}" x2="${w - m.r}" y1="${sy(v)}" y2="${sy(v)}"/><text x="${m.l - 6}" y="${sy(v) + 4}" text-anchor="end">${v === 0 ? '0' : (v < 0 ? '&minus;' : '') + (Math.abs(v) >= 1e4 ? '1e' + Math.round(Math.log10(Math.abs(v))) : Math.abs(v))}</text>`; });
+  const xt = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * T.steps));
+  xt.forEach((k) => { b += `<text x="${sx(k)}" y="${h - m.b + 16}" text-anchor="middle">${k}</text>`; });
+  b += `<line class="axis" x1="${m.l}" x2="${w - m.r}" y1="${sy(0)}" y2="${sy(0)}" style="stroke:var(--muted)"/><text x="${(m.l + w - m.r) / 2}" y="${h - 4}" text-anchor="middle">time steps</text><text x="4" y="10">weight value</text>`;
+  const stride = Math.max(1, Math.ceil(n / 500)), idx = []; for (let k = 0; k <= n; k += stride) idx.push(k); if (idx[idx.length - 1] !== n) idx.push(n);
+  const path = (i) => idx.map((k, j) => `${j ? 'L' : 'M'}${sx(k).toFixed(1)},${sy(tr.W[k][i]).toFixed(1)}`).join(' ');
+  const order = []; for (let i = 0; i < d; i++) order.push(i);
+  const isW7 = (i) => i === 6, isW8 = (i) => !T.tab && i === 7;
+  order.filter((i) => !isW7(i) && !isW8(i)).forEach((i) => { b += `<path d="${path(i)}" fill="none" stroke="var(--muted)" stroke-width="1.6" opacity=".7"/>`; });
+  b += `<path d="${path(6)}" fill="none" stroke="var(--c-a)" stroke-width="2.6"/>`;
+  if (!T.tab) b += `<path d="${path(7)}" fill="none" stroke="var(--c-c)" stroke-width="2.6"/>`;
+  $('c3b').innerHTML = b;
+  const v = tr.V[n], bad = v >= 1e3;
+  $('tN').textContent = `showing first ${n} of ${T.steps} steps`;
+  $('chips').innerHTML = `<span class="pill ${!T.tab ? 'on' : ''}">function approximation: ${!T.tab ? 'on' : 'off'}</span><span class="pill ${T.boot ? 'on' : ''}">bootstrapping: ${T.boot ? 'on' : 'off'}</span><span class="pill ${T.dist !== 'on' ? 'on' : ''}">off-policy data: ${T.dist !== 'on' ? 'on' : 'off'}</span><span class="pill ${bad ? 'bad' : 'good'}">${bad ? 'diverging' : 'bounded'} at step ${n}</span>`;
+  $('k3').innerHTML = kpi(bad ? 'a' : 'b', sci(v), 'largest |value estimate| (true value is 0)') + kpi('', sci(Math.max(...tr.W[n].map(Math.abs))), 'largest |weight|') + kpi('', String(n), 'steps shown') + kpi('', sci(tr.V[0]), 'largest |value| at the start');
+  const nOn = (!T.tab ? 1 : 0) + (T.boot ? 1 : 0) + (T.dist !== 'on' ? 1 : 0);
+  $('res3').innerHTML = `${nOn} of the 3 ingredients are on. After ${n} steps the largest value estimate is <b>${sci(v)}</b>${bad ? ', and it was still growing' : ''}. ${T.algo === 'tdc' ? 'TDC keeps a second weight vector that corrects the update direction. Here it stays bounded, but note how slowly the error shrinks once it settles.' : ''}`.replace('and it was still growing', (tr.V[n] > tr.V[Math.max(0, n - Math.max(1, Math.floor(n / 10)))] * 1.05) ? 'and it was still growing' : 'and it had levelled off');
+}
+
+const PRESETS = [
+  ['All three, semi-gradient TD(0)', { dist: 'off', tab: false, boot: true, algo: 'td' }],
+  ['Drop function approximation (tabular)', { dist: 'off', tab: true, boot: true, algo: 'td' }],
+  ['Drop bootstrapping', { dist: 'off', tab: false, boot: false, algo: 'td' }],
+  ['Drop off-policy (learn the behaviour policy)', { dist: 'on', tab: false, boot: true, algo: 'td' }],
+  ['All three, but TDC', { dist: 'off', tab: false, boot: true, algo: 'tdc' }],
+  ['Uniform sweeps (DP-style), TD(0)', { dist: 'uniform', tab: false, boot: true, algo: 'td' }],
+  ['Uniform sweeps (DP-style), TDC', { dist: 'uniform', tab: false, boot: true, algo: 'tdc' }]
+];
+function drawTable() {
+  const rows = PRESETS.map(([name, c]) => { const o = S.bairdRun(Object.assign({ alpha: 0.01, steps: 3000, seed: 1 }, c)); const v = o.V[o.V.length - 1]; return { name, c, v, bad: v >= 1e3 }; });
+  $('tbl3').innerHTML = `<table class="t"><thead><tr><th class="l">setup</th><th>function approx.</th><th>bootstrap</th><th>off-policy</th><th>max |value| at step 3000</th><th>verdict</th></tr></thead><tbody>` +
+    rows.map((r) => `<tr><td class="l">${r.name}</td><td>${r.c.tab ? 'no' : 'yes'}</td><td>${r.c.boot ? 'yes' : 'no'}</td><td>${r.c.dist === 'on' ? 'no' : 'yes'}</td><td class="mono">${sci(r.v)}</td><td class="${r.bad ? 'bad' : 'good'}">${r.bad ? 'diverges' : 'bounded'}</td></tr>`).join('') + `</tbody></table>`;
+  $('n3').innerHTML = `<b>What this does and does not show.</b> Baird's example is built to break semi-gradient TD, so it shows that the failure can happen, not that it is typical. In this experiment the only rows that diverge have all three ingredients and a plain semi-gradient update (the sampled one and the uniform-sweep one); the same data with TDC does not, and removing any one ingredient does not. &ldquo;Bounded&rdquo; only means it does not blow up: the tabular row creeps down slowly (with gamma = 0.99 the state-7 value shrinks about 1% per update to it), and TDC drops quickly to a largest value near 2 and then improves very slowly (about 1.86 after 200,000 steps at alpha = 0.01 in the uniform-sweep version). I also tried sampled emphatic TD(0) on this problem: it is wildly erratic at these step sizes (final largest value between 42 and 701 across 8 seeds at alpha = 0.001, and above 1e10 at alpha = 0.01 after 20,000 steps), which is why it is not offered as a toggle. Use the row labelled TDC as the working fix, and see section 11.7 of the book for why.`;
+}
+window.__td = { P1, st: () => st, runBaird, T, tr: () => tr, sweep: () => sweepRes, stepOnce, resetValues, finish };
+})();
+</script>
+</body>
+</html>
