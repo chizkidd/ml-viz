@@ -1,5 +1,5 @@
-![visitor badge](https://visitor-badge.laobi.icu/badge?page_id=chizkidd.ml-viz)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![visitor badge](https://visitor-badge.laobi.icu/badge?page_id=chizkidd.ml-viz)
 
 # ml-viz
 
