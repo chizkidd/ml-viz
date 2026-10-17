@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ml-viz</title>
+<meta name="description" content="Interactive explainers for ML, RL and LLM inference, built from real experiments.">
+<link rel="stylesheet" href="shared/theme.css">
+<style>
+  .cards { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; }
+  @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+  a.vcard { display: block; text-decoration: none; color: inherit; transition: transform .15s ease, box-shadow .15s ease; }
+  a.vcard:hover { transform: translateY(-2px); }
+  .vcard .tag { font: 600 11px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .vcard h2 { margin: 6px 0 6px; font-size: 1.25rem; }
+  .vcard p { margin: 0 0 10px; color: var(--muted); font-size: .94rem; }
+  .vcard.soon { opacity: .62; cursor: default; }
+  .vcard.soon:hover { transform: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar"><a href="https://chizkidd.github.io">chizkidd.github.io</a><span class="sp"></span><a href="https://github.com/chizkidd" target="_blank" rel="noopener">GitHub</a><button class="btn" id="themeBtn" type="button">Theme</button></div>
+  <h1>ml-viz</h1>
+  <p class="lede">Interactive explainers for ML, RL and LLM inference. Each one is built from an experiment I actually ran, and every chart says whether its numbers are measured or simulated.</p>
+  <div class="cards">
+    <a class="card vcard" href="inference-playground/">
+      <div class="tag">LLM inference</div><h2>Inference Playground</h2>
+      <p>Continuous batching, paged KV cache, the decode roofline and an engine-vs-vLLM scoreboard, on real Tesla T4 numbers from minivllm.</p>
+      <span class="badge measured">measured</span> <span class="badge simulated">simulated</span>
+    </a>
+    <a class="card vcard" href="flashattention-tiling/">
+      <div class="tag">GPU kernels</div><h2>FlashAttention tiling</h2>
+      <p>Step through the tiles and watch the online softmax keep a running max and rescale, without ever storing the full attention matrix. Checked against naive attention live.</p>
+      <span class="badge simulated">computed live</span>
+    </a>
+    <a class="card vcard" href="igbo-tone-loss/">
+      <div class="tag">Speech</div><h2>Igbo tone-loss explorer</h2>
+      <p>What a speech recognizer does to Igbo tone marks, clip by clip, with four ways to score it and honest error bars on 21 recordings.</p>
+      <span class="badge measured">measured</span> <span class="badge simulated">computed live</span>
+    </a>
+    <div class="card vcard soon">
+      <div class="tag">Reinforcement learning</div><h2>TD(&lambda;) and the deadly triad</h2>
+      <p>Slide lambda, add function approximation and off-policy updates, and watch value estimates diverge.</p>
+      <span class="badge">coming soon</span>
+    </div>
+  </div>
+  <footer class="site">Plain HTML, CSS and JavaScript. No build step needed to view; no tracking.</footer>
+</div>
+<script>
+document.getElementById('themeBtn').onclick = function () {
+  var cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+};
+</script>
+</body>
+</html>

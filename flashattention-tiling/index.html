@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashAttention Tiling</title>
+<meta name="description" content="Step through FlashAttention tile by tile, watch the online softmax rescale itself, and see why it moves far less data than naive attention.">
+<link rel="stylesheet" href="../shared/theme.css">
+<style>
+  .split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+  .grid-wrap { overflow-x: auto; }
+  .grid-wrap svg { min-width: 340px; }
+  .stepline { font: .86rem var(--mono); background: var(--surface-2); padding: 10px 12px; border-radius: 10px; line-height: 1.65; overflow-x: auto; }
+  .stepline b { color: var(--ink); }
+  .hot { color: var(--warn); font-weight: 700; }
+  .ok { color: var(--good); font-weight: 700; }
+  .bad { color: var(--bad); font-weight: 700; }
+  table.t td.num, table.t th.num { font-family: var(--mono); }
+  table.t tr.rescaled td { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .counter { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
+  .row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a href="../">&larr; ml-viz</a>
+    <span class="sp"></span>
+    <a href="https://arxiv.org/abs/2205.14135" target="_blank" rel="noopener">FlashAttention paper</a>
+    <button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
+  </div>
+  <h1>FlashAttention Tiling</h1>
+  <p class="lede">Attention needs a softmax over each row of an N by N score matrix, which looks like it forces you to build the whole matrix. FlashAttention does not. It walks over small tiles, keeps a running maximum and running sum per row, and fixes earlier work with a rescale factor whenever the maximum grows. The tab below runs the real arithmetic on random data and checks the answer against the naive method. Everything here is <span class="badge simulated">computed live</span> in your browser, nothing is measured on a GPU.</p>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" aria-selected="true" data-p="p1">1. Tile walk</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p2">2. Online softmax</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p3">3. Memory traffic</button>
+  </div>
+
+  <!-- ===== 1. TILE WALK ===== -->
+  <section class="panel" id="p1">
+    <div class="card">
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Sequence length N</label><div class="seg" id="sN"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Query block Br</label><div class="seg" id="sBr"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Key/value block Bc</label><div class="seg" id="sBc"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Mask</label><div class="seg" id="sCausal"><button data-v="0" aria-pressed="true">full</button><button data-v="1" aria-pressed="false">causal</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Method</label><div class="seg" id="sMode"><button data-v="flash" aria-pressed="true">Flash (tiled)</button><button data-v="naive" aria-pressed="false">Naive</button></div></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn" id="bReset" type="button">Reset</button>
+        <button class="btn" id="bPrev" type="button">Back</button>
+        <button class="btn primary" id="bPlay" type="button">Play</button>
+        <button class="btn" id="bNext" type="button">Next tile</button>
+        <button class="btn" id="bSeed" type="button">New random data</button>
+        <span class="small" id="stepInfo"></span>
+      </div>
+    </div>
+    <div class="split" style="margin-top:14px">
+      <div class="card">
+        <div class="row-head"><h2>Score matrix S = QKᵀ</h2><span class="small">rows are queries, columns are keys</span></div>
+        <div class="grid-wrap"><svg class="chart" id="gridSvg" role="img" aria-label="Attention score matrix with tiles"></svg></div>
+        <div class="legend" id="gridLegend"></div>
+        <div class="counter" id="counters"></div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>What this tile does</h2>
+          <div class="stepline" id="stepText"></div>
+          <div style="overflow-x:auto;margin-top:10px"><table class="t" id="rowTable"></table></div>
+          <div class="small" id="rowNote" style="margin-top:8px"></div>
+        </div>
+        <div class="card"><div class="callout" id="verdict"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 2. ONLINE SOFTMAX ===== -->
+  <section class="panel" id="p2" hidden>
+    <div class="card">
+      <h2>One row, block by block</h2>
+      <div class="small">A single query row with 12 scores. Blocks arrive one at a time. Bars show each weight relative to the current maximum. Watch earlier bars shrink the moment a bigger score shows up.</div>
+      <div class="controls" style="margin-top:12px">
+        <div class="ctl" style="min-width:auto"><label>Block size</label><div class="seg" id="oBlock"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Score magnitude</label><div class="seg" id="oMag"><button data-v="1" aria-pressed="true">small</button><button data-v="100" aria-pressed="false">x100</button><button data-v="1000" aria-pressed="false">x1000</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>&nbsp;</label><div style="display:flex;gap:8px"><button class="btn" id="oBack" type="button">Back</button><button class="btn primary" id="oNext" type="button">Next block</button><button class="btn" id="oSeed" type="button">New scores</button></div></div>
+      </div>
+      <svg class="chart" id="oSvg" role="img" aria-label="Online softmax bars"></svg>
+      <div class="stepline" id="oText" style="margin-top:8px"></div>
+      <div style="overflow-x:auto;margin-top:10px"><table class="t" id="oTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>Three ways to get the same answer</h2>
+      <div style="overflow-x:auto"><table class="t" id="cmpTable"></table></div>
+      <div class="callout" id="cmpNote" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ===== 3. MEMORY TRAFFIC ===== -->
+  <section class="panel" id="p3" hidden>
+    <div class="card">
+      <h2>How much data moves through slow memory? <span class="badge published">model, not a benchmark</span></h2>
+      <div class="small">Counts reads and writes to GPU main memory (HBM) per attention head, using the I/O analysis from the FlashAttention paper. The arithmetic is identical for both methods, only the traffic differs.</div>
+      <div class="controls" style="margin-top:12px">
+        <div class="ctl"><label>Sequence length N <span class="val" id="vN"></span></label><input type="range" id="tN" min="0" max="100" value="60"></div>
+        <div class="ctl" style="min-width:auto"><label>Head dimension d</label><div class="seg" id="tD"><button data-v="64" aria-pressed="true">64</button><button data-v="128" aria-pressed="false">128</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>On-chip memory per block</label><div class="seg" id="tM"><button data-v="64" aria-pressed="false">64 KB</button><button data-v="128" aria-pressed="true">128 KB</button><button data-v="192" aria-pressed="false">192 KB</button></div></div>
+      </div>
+      <div class="grid kpis" id="tK"></div>
+    </div>
+    <div class="card">
+      <svg class="chart" id="tChart" role="img" aria-label="HBM traffic against sequence length"></svg>
+      <div class="legend"><span><i style="background:var(--c-a)"></i>naive attention</span><span><i style="background:var(--c-b)"></i>FlashAttention</span></div>
+      <div class="callout" id="tNote" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <footer class="site">Formulas follow Dao et al., "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness" (2022). The tile order here is the one used by FlashAttention-2: the outer loop is over query blocks, the inner loop over key/value blocks.</footer>
+</div>
+
+<script>
+(function () {
+'use strict';
+const $ = (id) => document.getElementById(id);
+const fmt = (x, d = 2) => (x === -Infinity ? '-inf' : x === Infinity ? 'inf' : Number.isNaN(x) ? 'NaN' : Number(x).toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: 0 }));
+const f2 = (x) => (x === -Infinity ? '-inf' : x.toFixed(2));
+const kpi = (cls, v, l) => `<div class="kpi ${cls || ''}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+
+$('themeBtn').onclick = () => {
+  const cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+};
+const seen = {};
+document.querySelectorAll('#tabs .tab').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('#tabs .tab').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+  document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.id !== b.dataset.p; });
+  if (b.dataset.p !== 'p1') stopPlay();
+  if (!seen[b.dataset.p]) { seen[b.dataset.p] = true; if (b.dataset.p === 'p2') drawOnline(); if (b.dataset.p === 'p3') drawTraffic(); }
+});
+function seg(id, vals, cur, cb, label) {
+  $(id).innerHTML = vals.map((v) => `<button data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label ? label(v) : v}</button>`).join('');
+  $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cb(b.dataset.v); });
+}
+function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const gauss = (r) => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
+
+/* =========================================================
+   Math core (pure). Exposed on window.__fa for testing.
+   ========================================================= */
+const D = 4;
+function makeProblem(N, Br, Bc, causal, seed) {
+  const r = rng(seed), Q = [], K = [], V = [];
+  for (let i = 0; i < N; i++) { Q.push(Array.from({ length: D }, () => gauss(r) * 1.3)); K.push(Array.from({ length: D }, () => gauss(r) * 1.3)); V.push(Array.from({ length: D }, () => gauss(r))); }
+  const S = Q.map((q, i) => K.map((k, j) => (causal && j > i ? -Infinity : q.reduce((s, x, t) => s + x * k[t], 0) / Math.sqrt(D))));
+  // naive reference
+  const ref = S.map((row) => { const m = Math.max(...row), e = row.map((x) => Math.exp(x - m)), z = e.reduce((a, b) => a + b, 0); const o = new Array(D).fill(0); e.forEach((p, j) => V[j].forEach((v, t) => { o[t] += p / z * v; })); return o; });
+  const nR = Math.ceil(N / Br), nC = Math.ceil(N / Bc), tiles = [], steps = [], blockState = [];
+  let order = 0;
+  for (let bi = 0; bi < nR; bi++) {
+    const r0 = bi * Br, r1 = Math.min(N, r0 + Br) - 1, rows = []; for (let i = r0; i <= r1; i++) rows.push(i);
+    const m = rows.map(() => -Infinity), l = rows.map(() => 0), O = rows.map(() => new Array(D).fill(0));
+    for (let bj = 0; bj < nC; bj++) {
+      const c0 = bj * Bc, c1 = Math.min(N, c0 + Bc) - 1, tile = { bi, bj, r0, r1, c0, c1, order: order++, skipped: causal && c0 > r1 };
+      tiles.push(tile); if (tile.skipped) continue;
+      const info = rows.map((i, a) => {
+        let tmax = -Infinity; for (let j = c0; j <= c1; j++) tmax = Math.max(tmax, S[i][j]);
+        const mOld = m[a], mNew = Math.max(mOld, tmax), factor = mOld === -Infinity ? 0 : Math.exp(mOld - mNew);
+        let psum = 0; const pv = new Array(D).fill(0);
+        for (let j = c0; j <= c1; j++) { const p = S[i][j] === -Infinity ? 0 : Math.exp(S[i][j] - mNew); psum += p; for (let t = 0; t < D; t++) pv[t] += p * V[j][t]; }
+        l[a] = factor * l[a] + psum; for (let t = 0; t < D; t++) O[a][t] = factor * O[a][t] + pv[t];
+        m[a] = mNew;
+        return { i, mOld, mNew, factor, tmax, l: l[a], O: O[a].slice(), grew: mOld !== -Infinity && mNew > mOld };
+      });
+      const last = tiles.filter((t) => t.bi === bi && !t.skipped).length;
+      steps.push({ tile, info, first: info.every((x) => x.mOld === -Infinity), blockLast: false, idx: steps.length, nonSkippedInBlock: last });
+    }
+    // mark last real tile of this block and compute final rows
+    let lastStep = null; for (let s = steps.length - 1; s >= 0; s--) if (steps[s].tile.bi === bi) { lastStep = steps[s]; break; }
+    lastStep.blockLast = true;
+    lastStep.final = rows.map((i, a) => ({ i, O: O[a].map((x) => x / l[a]), err: Math.max(...O[a].map((x, t) => Math.abs(x / l[a] - ref[i][t]))) }));
+  }
+  const maxErr = Math.max(...steps.filter((s) => s.blockLast).flatMap((s) => s.final.map((f) => f.err)));
+  return { N, Br, Bc, causal, S, ref, tiles, steps, nR, nC, maxErr };
+}
+// one-row online softmax, scalar values
+function rowProblem(seed, mag) {
+  const r = rng(seed * 101 + 5), n = 12, xs = [], vs = [];
+  for (let i = 0; i < n; i++) { xs.push((gauss(r) * 1.6 + (i === 7 ? 2.5 : 0)) * mag); vs.push(gauss(r)); }
+  return { xs, vs };
+}
+function onlineStates(xs, vs, B) {
+  const out = [{ m: -Infinity, l: 0, o: 0, factor: 1, upto: 0 }]; let m = -Infinity, l = 0, o = 0;
+  for (let s = 0; s < xs.length; s += B) {
+    const blk = xs.slice(s, s + B), tm = Math.max(...blk), mn = Math.max(m, tm), fac = m === -Infinity ? 0 : Math.exp(m - mn);
+    let ps = 0, pv = 0; blk.forEach((x, k) => { const p = Math.exp(x - mn); ps += p; pv += p * vs[s + k]; });
+    l = fac * l + ps; o = fac * o + pv; m = mn; out.push({ m, l, o, factor: fac, upto: Math.min(xs.length, s + B), tmax: tm, grew: out[out.length - 1].m !== -Infinity && mn > out[out.length - 1].m });
+  }
+  return out;
+}
+function threeWays(xs, vs) {
+  const e = xs.map((x) => Math.exp(x)), z = e.reduce((a, b) => a + b, 0), naive = e.reduce((a, p, i) => a + p / z * vs[i], 0);
+  const m = Math.max(...xs), e2 = xs.map((x) => Math.exp(x - m)), z2 = e2.reduce((a, b) => a + b, 0), safe = e2.reduce((a, p, i) => a + p / z2 * vs[i], 0);
+  return { naive, safe, expInf: e.some((x) => !isFinite(x)) };
+}
+window.__fa = { makeProblem, rowProblem, onlineStates, threeWays };
+
+/* =========================================================
+   1. TILE WALK UI
+   ========================================================= */
+let cfg = { N: 12, Br: 4, Bc: 4, causal: 0, mode: 'flash', seed: 3 }, P, k = 0, playTimer = null;
+function build() { P = makeProblem(cfg.N, cfg.Br, cfg.Bc, !!cfg.causal, cfg.seed); k = 0; drawTile(); }
+seg('sN', [8, 12, 16], cfg.N, (v) => { cfg.N = +v; stopPlay(); build(); });
+seg('sBr', [2, 4, 8], cfg.Br, (v) => { cfg.Br = +v; stopPlay(); build(); });
+seg('sBc', [2, 4, 8], cfg.Bc, (v) => { cfg.Bc = +v; stopPlay(); build(); });
+$('sCausal').querySelectorAll('button').forEach((b) => b.onclick = () => { $('sCausal').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cfg.causal = +b.dataset.v; stopPlay(); build(); });
+$('sMode').querySelectorAll('button').forEach((b) => b.onclick = () => { $('sMode').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cfg.mode = b.dataset.v; drawTile(); });
+$('bReset').onclick = () => { stopPlay(); k = 0; drawTile(); };
+$('bPrev').onclick = () => { stopPlay(); k = Math.max(0, k - 1); drawTile(); };
+$('bNext').onclick = () => { stopPlay(); next(); };
+$('bSeed').onclick = () => { cfg.seed = (cfg.seed * 7919 + 17) % 99991; stopPlay(); build(); };
+$('bPlay').onclick = () => { if (playTimer) { stopPlay(); return; } if (k >= P.steps.length) k = 0; $('bPlay').textContent = 'Pause'; playTimer = setInterval(() => { if (k >= P.steps.length) { stopPlay(); return; } next(); }, 750); };
+function stopPlay() { if (playTimer) clearInterval(playTimer); playTimer = null; $('bPlay').textContent = 'Play'; }
+function next() { if (k < P.steps.length) { k++; drawTile(); } }
+document.addEventListener('keydown', (e) => { if ($('p1').hidden || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return; if (e.key === 'ArrowRight') { stopPlay(); next(); } if (e.key === 'ArrowLeft') { stopPlay(); k = Math.max(0, k - 1); drawTile(); } });
+
+function drawTile() {
+  const { N, S, steps, tiles } = P, cs = Math.min(34, Math.floor(430 / N)), ox = 26, oy = 22, W = ox + N * cs + 6, H = oy + N * cs + 6;
+  const cur = k > 0 ? steps[k - 1] : null, finite = S.flat().filter((x) => x > -Infinity), lo = Math.min(...finite), hi = Math.max(...finite);
+  const doneOrder = cur ? cur.tile.order : -1;
+  let b = `<defs><pattern id="gh" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--hatch)" stroke-width="2.6"/></pattern></defs>`;
+  for (let i = 0; i < N; i++) b += `<text x="${ox - 6}" y="${oy + i * cs + cs / 2 + 4}" text-anchor="end">${i}</text><text x="${ox + i * cs + cs / 2}" y="${oy - 7}" text-anchor="middle">${i}</text>`;
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const x = ox + j * cs, y = oy + i * cs, t = tiles.find((tt) => i >= tt.r0 && i <= tt.r1 && j >= tt.c0 && j <= tt.c1);
+    let fill = 'var(--surface-2)', op = 1, txt = '';
+    const processed = t.order <= doneOrder && !t.skipped, isCur = cur && t.order === cur.tile.order;
+    if (cfg.mode === 'naive' && k > 0) { if (S[i][j] === -Infinity) fill = 'url(#gh)'; else { fill = 'var(--c-a)'; op = 0.18 + 0.8 * (S[i][j] - lo) / (hi - lo || 1); } }
+    else if (t.skipped && (t.order <= doneOrder || k >= steps.length)) fill = 'url(#gh)';
+    else if (processed) { if (S[i][j] === -Infinity) fill = 'url(#gh)'; else { fill = 'var(--c-b)'; op = (0.18 + 0.8 * (S[i][j] - lo) / (hi - lo || 1)) * (isCur ? 1 : 0.32); } }
+    if (cur && isCur && !t.skipped) txt = S[i][j] === -Infinity ? '' : S[i][j].toFixed(1);
+    b += `<rect x="${x}" y="${y}" width="${cs}" height="${cs}" fill="${fill}" opacity="${op}" stroke="var(--line)" stroke-width=".5"/>`;
+    if (txt && cs >= 22) b += `<text x="${x + cs / 2}" y="${y + cs / 2 + 4}" text-anchor="middle" style="fill:var(--ink);font-size:${cs > 26 ? 10 : 9}px;font-weight:600">${txt}</text>`;
+  }
+  // tile borders
+  tiles.forEach((t) => { b += `<rect x="${ox + t.c0 * cs}" y="${oy + t.r0 * cs}" width="${(t.c1 - t.c0 + 1) * cs}" height="${(t.r1 - t.r0 + 1) * cs}" fill="none" stroke="var(--muted)" stroke-width="1" opacity=".6"/>`; });
+  if (cur) {
+    const t = cur.tile;
+    b += `<rect x="${ox - 1}" y="${oy + t.r0 * cs - 1}" width="${N * cs + 2}" height="${(t.r1 - t.r0 + 1) * cs + 2}" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="4 3"/>`;
+    b += `<rect x="${ox + t.c0 * cs}" y="${oy + t.r0 * cs}" width="${(t.c1 - t.c0 + 1) * cs}" height="${(t.r1 - t.r0 + 1) * cs}" fill="none" stroke="var(--ink)" stroke-width="2.6"/>`;
+  }
+  $('gridSvg').innerHTML = b; $('gridSvg').setAttribute('viewBox', `0 0 ${W} ${H}`);
+  $('gridLegend').innerHTML = cfg.mode === 'flash'
+    ? `<span><i style="background:var(--c-b)"></i>current tile, in fast on-chip memory</span><span><i style="background:var(--c-b);opacity:.35"></i>already folded into m, l, O and thrown away</span><span><i class="hatch"></i>masked or skipped</span><span><i style="border:2px dashed var(--accent);background:none"></i>current query block</span>`
+    : `<span><i style="background:var(--c-a)"></i>score stored in main memory</span><span><i class="hatch"></i>masked</span>`;
+  const real = steps.length, tilesTotal = tiles.length, skipped = tiles.filter((t) => t.skipped).length;
+  $('stepInfo').textContent = k === 0 ? `ready, ${real} tiles to process${skipped ? ` (${skipped} skipped by the mask)` : ''}` : `tile ${k} of ${real}`;
+  const sramNow = Math.min(cfg.Br, N) * Math.min(cfg.Bc, N);
+  $('counters').innerHTML = cfg.mode === 'flash'
+    ? kpi('b', '0', 'scores written to main memory') + kpi('', String(sramNow), 'scores alive at once (Br x Bc)') + kpi('', String(N * D + 2 * N), 'running state kept: O, m, l') + kpi('', `${real}${skipped ? ' of ' + tilesTotal : ''}`, 'tiles computed')
+    : kpi('a', String(N * N), 'scores written to main memory') + kpi('a', String(N * N * 2), 'scores read back (softmax, then PV)') + kpi('', String(N * N), 'scores alive at once') + kpi('', '3', 'separate passes over the matrix');
+  // text + table
+  if (cfg.mode === 'naive') {
+    $('stepText').innerHTML = `<b>Naive attention</b><br>1. S = Q Kᵀ / sqrt(d) for all ${N}x${N} pairs, written to memory<br>2. P = softmax(S) row by row, written again<br>3. O = P V<br>Press <b>Next tile</b> to reveal the matrix, then switch to Flash to see the tiled version.`;
+    $('rowTable').innerHTML = ''; $('rowNote').textContent = '';
+  } else if (!cur) {
+    $('stepText').innerHTML = `<b>Start.</b> For every query row we keep three things: a running max <b>m</b> (starts at -inf), a running sum <b>l</b> (starts at 0), and an output accumulator <b>O</b> (starts at 0). Press <b>Next tile</b> or <b>Play</b>. Arrow keys also work.`;
+    $('rowTable').innerHTML = ''; $('rowNote').textContent = '';
+  } else {
+    const t = cur.tile;
+    $('stepText').innerHTML = `<b>query block ${t.bi + 1}/${P.nR}</b> (rows ${t.r0}-${t.r1}), <b>key/value tile ${t.bj + 1}/${P.nC}</b> (cols ${t.c0}-${t.c1})<br>` +
+      `S = Q<sub>i</sub> K<sub>j</sub>ᵀ / sqrt(d)<br>m_new = max(m_old, rowmax(S))<br>factor = exp(m_old - m_new)<br>l = factor*l + rowsum(exp(S - m_new))<br>O = factor*O + exp(S - m_new) V<sub>j</sub>`;
+    let h = '<tr><th>row</th><th class="num">m old</th><th class="num">m new</th><th class="num">factor</th><th class="num">l</th><th class="num">O (first 2 dims)</th></tr>';
+    cur.info.forEach((x) => { h += `<tr class="${x.grew ? 'rescaled' : ''}"><td>${x.i}</td><td class="num">${f2(x.mOld)}</td><td class="num">${f2(x.mNew)}</td><td class="num">${x.mOld === -Infinity ? '-' : x.factor.toFixed(3)}</td><td class="num">${x.l.toFixed(3)}</td><td class="num">${x.O.slice(0, 2).map((v) => v.toFixed(2)).join(', ')}</td></tr>`; });
+    $('rowTable').innerHTML = h;
+    const grew = cur.info.filter((x) => x.grew).length;
+    $('rowNote').innerHTML = grew ? `<span class="hot">${grew} row${grew > 1 ? 's' : ''} found a bigger score</span> (shaded). Their old sums were measured against a smaller max, so l and O are multiplied by the factor to correct them.` : (cur.first ? 'First tile for this block: nothing to correct yet.' : 'No row found a bigger score here, so the factor is 1.000 and old work stands as is.');
+    if (cur.blockLast) { const e = Math.max(...cur.final.map((f) => f.err)); $('rowNote').innerHTML += `<br><b>Block finished.</b> Dividing O by l gives the final output for rows ${t.r0}-${t.r1}. Largest difference from the naive result: <span class="ok">${e.toExponential(1)}</span>.`; }
+  }
+  const finished = k >= steps.length;
+  $('verdict').innerHTML = finished
+    ? `Done. Across all ${P.N} rows the tiled result matches naive attention to <b class="ok">${P.maxErr.toExponential(1)}</b> (floating point rounding). Same answer, but the ${P.N}x${P.N} matrix was never stored.`
+    : `The check against naive attention runs at the end of each query block, so you can verify the answer is exact, not approximate.`;
+}
+
+/* =========================================================
+   2. ONLINE SOFTMAX UI
+   ========================================================= */
+let oc = { B: 3, mag: 1, seed: 4, k: 0 }, RP, OS;
+seg('oBlock', [2, 3, 4, 6], oc.B, (v) => { oc.B = +v; oc.k = 0; drawOnline(); });
+$('oMag').querySelectorAll('button').forEach((b) => b.onclick = () => { $('oMag').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); oc.mag = +b.dataset.v; oc.k = 0; drawOnline(); });
+$('oBack').onclick = () => { oc.k = Math.max(0, oc.k - 1); drawOnline(true); };
+$('oNext').onclick = () => { if (oc.k < OS.length - 1) oc.k++; drawOnline(true); };
+$('oSeed').onclick = () => { oc.seed = (oc.seed * 31 + 7) % 9973; oc.k = 0; drawOnline(); };
+function drawOnline(keep) {
+  RP = rowProblem(oc.seed, oc.mag); OS = onlineStates(RP.xs, RP.vs, oc.B);
+  const st = OS[oc.k], n = RP.xs.length, W = 760, H = 230, left = 30, bw = (W - left - 10) / n, base = 168, hMax = 120;
+  let b = `<line class="axis" x1="${left}" x2="${W - 8}" y1="${base}" y2="${base}"/><text x="2" y="${base - hMax + 6}">1.0</text><text x="2" y="${base + 4}">0</text>`;
+  for (let i = 0; i < n; i++) {
+    const x = left + i * bw, seen = i < st.upto, h = seen ? Math.exp(RP.xs[i] - st.m) * hMax : 0, isMax = seen && RP.xs[i] === st.m;
+    if (seen) b += `<rect x="${x + 3}" y="${base - h}" width="${bw - 6}" height="${Math.max(1, h)}" rx="3" fill="${isMax ? 'var(--warn)' : 'var(--c-b)'}"><title>x=${RP.xs[i].toFixed(1)}</title></rect>`;
+    else b += `<rect x="${x + 3}" y="${base - 18}" width="${bw - 6}" height="18" rx="3" fill="none" stroke="var(--muted)" stroke-dasharray="3 3"/>`;
+    b += `<text x="${x + bw / 2}" y="${base + 15}" text-anchor="middle" style="font-size:${oc.mag > 1 ? 9 : 11}px">${RP.xs[i].toFixed(oc.mag > 1 ? 0 : 1)}</text>`;
+    if (i % oc.B === 0) b += `<line x1="${x}" x2="${x}" y1="${base - hMax - 6}" y2="${base + 22}" stroke="var(--line)" stroke-dasharray="2 3"/>`;
+  }
+  b += `<text x="${left}" y="${H - 10}">raw scores x_j (dashed outlines have not arrived yet), bar = exp(x_j - running max)</text>`;
+  $('oSvg').innerHTML = b; $('oSvg').setAttribute('viewBox', `0 0 ${W} ${H}`);
+  if (oc.k === 0) $('oText').innerHTML = `Start: m = -inf, l = 0, o = 0. Press <b>Next block</b>.`;
+  else $('oText').innerHTML = `Block ${oc.k} (scores ${(oc.k - 1) * oc.B}-${st.upto - 1}): block max = <b>${fmt(st.tmax, 1)}</b>, running max m = <b>${fmt(st.m, 1)}</b>${st.grew ? ` <span class="hot">(grew)</span>` : ''}<br>factor = exp(m_old - m_new) = <b>${oc.k === 1 ? 'n/a' : st.factor.toExponential(2)}</b>${st.grew ? ' : earlier bars shrink by this much' : ' : nothing to fix'}<br>l = ${fmt(st.l, 3)}, o = ${fmt(st.o, 3)}, output so far = o / l = <b>${st.l > 0 ? fmt(st.o / st.l, 4) : '-'}</b>`;
+  let h = '<tr><th>after block</th><th class="num">m</th><th class="num">factor</th><th class="num">l</th><th class="num">o / l</th></tr>';
+  OS.slice(1, oc.k + 1).forEach((s, i) => { h += `<tr class="${s.grew ? 'rescaled' : ''}"><td>${i + 1}</td><td class="num">${fmt(s.m, 1)}</td><td class="num">${i === 0 ? '-' : s.factor.toExponential(2)}</td><td class="num">${fmt(s.l, 3)}</td><td class="num">${fmt(s.o / s.l, 4)}</td></tr>`; });
+  $('oTable').innerHTML = oc.k ? h : '';
+  const tw = threeWays(RP.xs, RP.vs), onl = OS[OS.length - 1].o / OS[OS.length - 1].l;
+  const cell = (v) => (Number.isFinite(v) ? v.toFixed(6) : '<span class="bad">NaN</span>');
+  $('cmpTable').innerHTML = `<tr><th>method</th><th>passes over the scores</th><th class="num">result</th><th class="num">difference from safe softmax</th></tr>
+    <tr><td>Plain softmax, exp(x) / sum exp(x)</td><td>2</td><td class="num">${cell(tw.naive)}</td><td class="num">${Number.isFinite(tw.naive) ? Math.abs(tw.naive - tw.safe).toExponential(1) : '<span class="bad">overflowed</span>'}</td></tr>
+    <tr><td>Safe softmax, subtract the max first</td><td>3</td><td class="num">${cell(tw.safe)}</td><td class="num">0</td></tr>
+    <tr><td>Online softmax (what FlashAttention does)</td><td>1</td><td class="num">${cell(onl)}</td><td class="num">${Math.abs(onl - tw.safe).toExponential(1)}</td></tr>`;
+  $('cmpNote').innerHTML = tw.expInf
+    ? `With scores this large, exp(x) overflows to infinity and the plain method returns <span class="bad">NaN</span>. Subtracting the max fixes it, and the online version gets there in one pass without ever seeing all scores at once.`
+    : `All three agree. Try <b>x100</b> or <b>x1000</b>: the plain method breaks, the other two do not. The online method matters because it needs only one pass, so a tile can be thrown away right after use.`;
+  if (!keep) {}
+}
+
+/* =========================================================
+   3. MEMORY TRAFFIC
+   ========================================================= */
+let tc = { d: 64, M: 128 };
+seg('tD', [64, 128], tc.d, (v) => { tc.d = +v; drawTraffic(); });
+seg('tM', [64, 128, 192], tc.M, (v) => { tc.M = +v; drawTraffic(); }, (v) => v + ' KB');
+$('tD').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.v === tc.d)));
+$('tN').addEventListener('input', drawTraffic);
+const nOf = (p) => Math.round(Math.pow(2, 8 + p / 100 * 8));  // 256 .. 65536
+function io(N, d, Mkb) {
+  const M = Mkb * 1024 / 2, Br = Math.max(1, Math.min(N, Math.floor(M / (4 * d)))); // elements in fp16
+  const naive = (4 * N * d + 4 * N * N) * 2, flash = (2 * N * d + 2 * N * d * Math.ceil(N / Br)) * 2;
+  return { naive, flash, Br, Smat: N * N * 2 };
+}
+const gb = (x) => (x >= 1e9 ? fmt(x / 1e9, 1) + ' GB' : x >= 1e6 ? fmt(x / 1e6, 0) + ' MB' : fmt(x / 1e3, 0) + ' KB');
+function drawTraffic() {
+  const N = nOf(+$('tN').value); $('vN').textContent = fmt(N, 0);
+  const r = io(N, tc.d, tc.M);
+  $('tK').innerHTML = kpi('a', gb(r.naive), 'naive traffic per head') + kpi('b', gb(r.flash), 'FlashAttention traffic per head') + kpi('c', fmt(r.naive / r.flash, 1) + 'x', 'less data moved') +
+    kpi('', gb(r.Smat), 'size of the score matrix (16-bit)') + kpi('', String(r.Br), 'rows per block that fit on chip');
+  const xs = []; for (let n = 256; n <= 65536; n *= 2) xs.push(n);
+  const sA = xs.map((n) => [n, io(n, tc.d, tc.M).naive]), sB = xs.map((n) => [n, io(n, tc.d, tc.M).flash]);
+  const w = 760, h = 300, m = { l: 62, r: 20, t: 14, b: 40 }, all = sA.concat(sB), y0 = Math.min(...all.map((p) => p[1])) / 1.5, y1 = Math.max(...all.map((p) => p[1])) * 1.5;
+  const sx = (v) => m.l + (Math.log(v) - Math.log(256)) / (Math.log(65536) - Math.log(256)) * (w - m.l - m.r), sy = (v) => h - m.b - (Math.log(v) - Math.log(y0)) / (Math.log(y1) - Math.log(y0)) * (h - m.t - m.b);
+  let b = '';
+  for (let e = Math.ceil(Math.log10(y0)); e <= Math.floor(Math.log10(y1)); e++) { const v = Math.pow(10, e); b += `<line class="grid-l" x1="${m.l}" x2="${w - m.r}" y1="${sy(v)}" y2="${sy(v)}"/><text x="${m.l - 6}" y="${sy(v) + 4}" text-anchor="end">${gb(v)}</text>`; }
+  xs.forEach((n) => { b += `<text x="${sx(n)}" y="${h - m.b + 16}" text-anchor="middle">${n >= 1024 ? n / 1024 + 'K' : n}</text>`; });
+  b += `<line class="axis" x1="${m.l}" x2="${w - m.r}" y1="${h - m.b}" y2="${h - m.b}"/><text x="${(m.l + w - m.r) / 2}" y="${h - 4}" text-anchor="middle">sequence length N</text><text x="4" y="11">main-memory traffic per head</text>`;
+  [[sA, 'var(--c-a)'], [sB, 'var(--c-b)']].forEach(([s, c]) => { b += `<path d="${s.map((p, i) => `${i ? 'L' : 'M'}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(' ')}" fill="none" stroke="${c}" stroke-width="2.6"/>`; s.forEach((p) => { b += `<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="3" fill="${c}"/>`; }); });
+  b += `<line x1="${sx(N)}" x2="${sx(N)}" y1="${m.t}" y2="${h - m.b}" stroke="var(--ink)" opacity=".5"/><text x="${sx(N) + 5}" y="${m.t + 12}" class="lbl-strong">N = ${fmt(N, 0)}</text>`;
+  $('tChart').innerHTML = b; $('tChart').setAttribute('viewBox', `0 0 ${w} ${h}`);
+  $('tNote').innerHTML = `Naive traffic grows with N squared because the score matrix is written and read several times. FlashAttention still scales with N squared, but with a much smaller constant: roughly N squared times d squared divided by the on-chip memory size. At N = ${fmt(N, 0)} the full score matrix alone would be <b>${gb(r.Smat)}</b> per head in 16-bit, which tiling never creates. This is an I/O model: real kernels add overheads, so treat the ratio as the shape of the effect, not a speedup you will see on a stopwatch.`;
+}
+
+build();
+})();
+</script>
+</body>
+</html>

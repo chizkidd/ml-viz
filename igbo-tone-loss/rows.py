@@ -1,0 +1,25 @@
+# 21 rows of Chiz/omniASR-igbo-blindspots (train split), transcribed from the dataset viewer.
+# id = 0-based viewer row index. cer, e, p are the values reported in the dataset.
+ROWS = [
+ (0,"script_hallucination","personal_names","ibo_Latn","Aha m bụ Chukwuemeka. Nna m bụ Obiora. Nne m bụ Ngozi.","ahambụ cheku emeka nnam bụ ọbiọra nnem bụ ngọzi",0.485,3,6),
+ (1,"script_hallucination","greetings","ibo_Latn","Nnọọ. Kedu ka ị mere? Ọ dị mma. Daalụ.","nọ kedo ke imere ọ dị mma daalụ",0.188,6,4),
+ (2,"script_hallucination","numeric","ibo_Latn","Otu, abụọ, atọ, anọ, ise, isii, asaa, asatọ, itoolu, iri.","ọtu abuọ atọ anọ ise isi asa asatọ ìtọlu iri",0.208,5,7),
+ (3,"script_hallucination","idiomatic","ibo_Latn","Onye aghala nwanne ya.","onje agalá wánẹ yá",0.400,0,4),
+ (4,"script_hallucination","prosody","ibo_Latn","Aha m bụ Chizoba. Kedu ka ị mere taa? Ọ dị mma.","aham bụ chizọba kedu ke imereta ọ dị mmaa",0.159,4,4),
+ (5,"tonal_diacritics","minimal_pair","ibo_Latn","Akwa, akwa, akwa. Akwà, akwà, akwà. Àkwà, àkwà, àkwà. Ákwá, ákwá, ákwá.","akua akua akua akua akwa akwa akwa akua akwa ọkua ọkua ọkua",0.600,15,3),
+ (6,"tonal_diacritics","minimal_pair","ibo_Latn","Oke, oke, oke. Òkè, òkè, òkè. Ọkè, ọkè, ọkè.","oke oke oke oke oke oke oke oke oki",0.418,12,0),
+ (7,"tonal_diacritics","high_density","ibo_Latn","Ọ nà-èrì ọ̀jị̀ n'ụ̀tụ̀tụ̀.","ọ na eri ọjị n'ututu",0.435,9,3),
+ (8,"tonal_diacritics","monotone","ibo_Latn","O na-eri oji n'ututu.","ọne rị ọjí nụ tútú",0.744,0,7),
+ (9,"tonal_diacritics","control_language","yor_Latn","Kí ló dé, kí ló ṣe lẹ́?","kílode kílo ṣele",0.385,7,3),
+ (10,"code_switching","en_to_ig","mixed","I'm going to the ọgbọ today with my ụmụnne.","iam going today ogbo today with my umun ne",0.224,4,0),
+ (11,"code_switching","ig_to_en","mixed","M ga-eje shopping taa. M chọrọ credit card m.","nga eje shọpịnta nchọrọ kridịkad m",0.367,2,5),
+ (12,"code_switching","sentence_level","mixed","I need rice. M chọrọ ji. I want yam. M chọrọ akpu.","i nied ric nchọrọ ji i wọnt yam nchọrọ akpụ",0.183,4,6),
+ (13,"code_switching","with_diacritics","mixed","The ụlọ is beautiful. My ụmụaka are playing.","te ulọ is beautiful my umuaka a playing",0.133,4,1),
+ (14,"code_switching","control_pidgin","pcm_Latn","I wan chop rice. Abeg, give me water.","i want chop rice i beg give me water",0.096,0,0),
+ (15,"cultural_context","geographic","ibo_Latn","M bi na Enugu. Nnà m sị Owerri. M ga Onitsha.","mbị na ịnugu nnamsigo weri nga ọnịcha",0.390,2,4),
+ (16,"cultural_context","culinary","mixed","M na-eri jollof rice na egusi soup. Ọ tọrọ ụtọ.","emna iri jelọfres na egusi suup ọtọrụ ụtọ",0.250,5,6),
+ (17,"cultural_context","idiomatic","ibo_Latn","Ọnwa na-agbanwe, anyanwụ na-agbanwe, ma ala adịghị agbanwe.","owuana agbawe ayawu na agbawe mala adege agbawe",0.264,4,0),
+ (18,"cultural_context","control_language","fra_Latn","Bonjour, comment ça va? Je m'appelle Chizoba. J'habite à Paris.","bondu komosova že ma pelčizoba jea bit apari",0.402,1,0),
+ (19,"cultural_context","noise_robustness","ibo_Latn","Aha m bụ Chizoba. Kedu ka ị mere taa? Ọ dị mma.","aha mbụchizọba kidụka imereta ọ dị mma",0.200,4,5),
+ (20,"tonal_diacritics","control_formal","yor_Latn","Ẹ káàárọ̀. Báwo ni?","ekaọrọ bawọ ni",0.455,6,3),
+]
