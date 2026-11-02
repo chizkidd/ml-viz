@@ -1,4 +1,4 @@
-"""Pull the numbers the playground shows out of chizkidd/minivllm's results/*.json.
+"""Pull the numbers the playground shows out of chizkidd/mini-vllm's results/*.json.
 
 Usage: python3 extract_data.py /path/to/minivllm/results > data.json
 Everything in the output is a measured value (Tesla T4). Nothing is invented here.

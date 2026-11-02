@@ -1,5 +1,5 @@
 // Pure simulation code. No DOM. Inlined into index.html by build.py and also unit-checked in node.
-// Constants are calibrated to the T4 measurements in chizkidd/minivllm (stage 3 and stage 4).
+// Constants are calibrated to the T4 measurements in chizkidd/mini-vllm (stage 3 and stage 4).
 
 const CAL = {
   // Fitted by grid search (see CALIBRATION in the page) so that simulated goodput for static and continuous batching

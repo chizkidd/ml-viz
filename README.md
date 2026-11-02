@@ -4,7 +4,7 @@ Interactive explainers for ML, RL and LLM inference, built from real experiments
 
 | Folder | What it is | Status |
 |---|---|---|
-| `inference-playground/` | Continuous batching, paged KV cache, decode roofline, engine vs vLLM. Real Tesla T4 numbers from [minivllm](https://github.com/chizkidd/minivllm). | ready |
+| `inference-playground/` | Continuous batching, paged KV cache, decode roofline, engine vs vLLM. Real Tesla T4 numbers from [minivllm](https://github.com/chizkidd/mini-vllm). | ready |
 | `flashattention-tiling/` | Tile-by-tile FlashAttention with online softmax, verified against naive attention in the browser. Single file. | ready |
 | `igbo-tone-loss/` | Tone-mark loss in ASR on 21 Igbo clips: clip explorer, scoreboard with bootstrap intervals, mark types, a position-by-position alignment estimate with a confusion matrix, and method checks (resampling unit, CER vs tone loss, limitations). Data from [omniASR-igbo-blindspots](https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots). | ready |
 | `td-lambda/` | TD(lambda) on the 19-state random walk (step through eligibility traces, sweep lambda and alpha), the w/2w example, and Baird's counterexample with toggles for function approximation, bootstrapping, off-policy data and TDC. Simulated live with fixed seeds. | ready |
