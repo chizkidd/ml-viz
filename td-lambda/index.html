@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TD(&lambda;) and the Deadly Triad</title>
 <meta name="description" content="Watch eligibility traces spread credit backwards, sweep lambda on the 19-state random walk, and see Baird's counterexample diverge when function approximation, bootstrapping and off-policy training meet.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="TD(λ) and the Deadly Triad — ml-viz">
+<meta property="og:description" content="Live seeded RL simulations: eligibility traces on the 19-state random walk, lambda/alpha sweeps, w/2w, and Baird's counterexample with TDC.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/td-lambda/">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="../shared/theme.css">
 <style>
   .chart-wrap { overflow-x: auto; }
@@ -36,6 +41,7 @@
   ul.tight { margin: 6px 0 0; padding-left: 20px; }
   ul.tight li { margin: 3px 0; }
 </style>
+<script src="../shared/ui.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -59,8 +65,8 @@
     <div class="card">
       <div class="small" style="margin-bottom:10px">A walker starts in the middle of 19 states and steps left or right. Falling off the left end pays &minus;1, off the right end pays +1, everything else pays 0 (undiscounted). The true value of each state runs from &minus;0.9 to +0.9. All estimates start at 0, so the first surprise happens at the very end of an episode.</div>
       <div class="controls">
-        <div class="ctl wide"><label>lambda <span class="val" id="vLam">0.80</span></label><input type="range" id="rLam" min="0" max="1" step="0.05" value="0.8"></div>
-        <div class="ctl wide"><label>step size alpha <span class="val" id="vAlp">0.30</span></label><input type="range" id="rAlp" min="0.05" max="0.5" step="0.05" value="0.3"></div>
+        <div class="ctl wide"><label for="rLam">lambda <span class="val" id="vLam">0.80</span></label><input type="range" id="rLam" min="0" max="1" step="0.05" value="0.8"></div>
+        <div class="ctl wide"><label for="rAlp">step size alpha <span class="val" id="vAlp">0.30</span></label><input type="range" id="rAlp" min="0.05" max="0.5" step="0.05" value="0.3"></div>
         <div class="ctl" style="min-width:auto"><label>Trace</label><div class="seg" id="sKind"></div></div>
         <div class="ctl" style="min-width:auto"><label>Walk</label><div class="seg" id="sPol"></div></div>
       </div>
@@ -120,8 +126,8 @@
       <h2>The smallest example: w and 2w</h2>
       <div class="small">Two states share one weight: v(s<sub>1</sub>) = w and v(s<sub>2</sub>) = 2w. The only transition we ever see goes from s<sub>1</sub> to s<sub>2</sub> with reward 0, and we update after each one: w &larr; w + &alpha;(&gamma;&middot;2w &minus; w). The update never touches s<sub>2</sub>'s own error, so nothing pulls w back. Each update multiplies w by 1 + &alpha;(2&gamma; &minus; 1).</div>
       <div class="controls mt">
-        <div class="ctl wide"><label>discount gamma <span class="val" id="vG">0.90</span></label><input type="range" id="rG" min="0.3" max="1" step="0.01" value="0.9"></div>
-        <div class="ctl wide"><label>step size alpha <span class="val" id="vA2">0.10</span></label><input type="range" id="rA2" min="0.01" max="0.5" step="0.01" value="0.1"></div>
+        <div class="ctl wide"><label for="rG">discount gamma <span class="val" id="vG">0.90</span></label><input type="range" id="rG" min="0.3" max="1" step="0.01" value="0.9"></div>
+        <div class="ctl wide"><label for="rA2">step size alpha <span class="val" id="vA2">0.10</span></label><input type="range" id="rA2" min="0.01" max="0.5" step="0.01" value="0.1"></div>
       </div>
       <div class="chart-wrap"><svg class="chart" id="c3a" viewBox="0 0 760 240"></svg></div>
       <div class="stepline" id="two"></div>
@@ -368,17 +374,8 @@ const kpi = (cls, v, l) => `<div class="kpi ${cls || ''}"><div class="v">${v}</d
 const sci = (x) => (!isFinite(x) ? 'overflow' : Math.abs(x) >= 1e4 || (Math.abs(x) < 1e-2 && x !== 0) ? x.toExponential(2) : x.toFixed(Math.abs(x) >= 100 ? 0 : 2));
 const NS = S.N;
 
-$('themeBtn').onclick = () => {
-  const cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
-};
+if (window.mlViz) window.mlViz.initTheme('themeBtn');
 const seen = {};
-document.querySelectorAll('#tabs .tab').forEach((b) => b.onclick = () => {
-  document.querySelectorAll('#tabs .tab').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
-  document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.id !== b.dataset.p; });
-  stopPlay(); stopT();
-  if (!seen[b.dataset.p]) { seen[b.dataset.p] = true; if (b.dataset.p === 'p2') runSweep(); if (b.dataset.p === 'p3') { drawTwo(); drawMdp(); runBaird(); drawTable(); } }
-});
 function seg(id, vals, cur, cb, label) {
   $(id).innerHTML = vals.map((v) => `<button data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label ? label(v) : v}</button>`).join('');
   $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cb(b.dataset.v); });
@@ -644,6 +641,16 @@ function drawTable() {
   $('n3').innerHTML = `<b>What this does and does not show.</b> Baird's example is built to break semi-gradient TD, so it shows that the failure can happen, not that it is typical. In this experiment the only rows that diverge have all three ingredients and a plain semi-gradient update (the sampled one and the uniform-sweep one); the same data with TDC does not, and removing any one ingredient does not. &ldquo;Bounded&rdquo; only means it does not blow up: the tabular row creeps down slowly (with gamma = 0.99 the state-7 value shrinks about 1% per update to it), and TDC drops quickly to a largest value near 2 and then improves very slowly (about 1.86 after 200,000 steps at alpha = 0.01 in the uniform-sweep version). I also tried sampled emphatic TD(0) on this problem: it is wildly erratic at these step sizes (final largest value between 42 and 701 across 8 seeds at alpha = 0.001, and above 1e10 at alpha = 0.01 after 20,000 steps), which is why it is not offered as a toggle. Use the row labelled TDC as the working fix, and see section 11.7 of the book for why.`;
 }
 window.__td = { P1, st: () => st, runBaird, T, tr: () => tr, sweep: () => sweepRes, stepOnce, resetValues, finish };
+if (window.mlViz) {
+  window.mlViz.initTabs({
+    tablistId: 'tabs',
+    slugs: { p1: 'credit', p2: 'sweep', p3: 'triad' },
+    onSelect: (pid) => {
+      stopPlay(); stopT();
+      if (!seen[pid]) { seen[pid] = true; if (pid === 'p2') runSweep(); if (pid === 'p3') { drawTwo(); drawMdp(); runBaird(); drawTable(); } }
+    },
+  });
+}
 })();
 </script>
 </body>

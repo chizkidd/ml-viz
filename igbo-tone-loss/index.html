@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Igbo Tone-Loss Explorer</title>
-<meta name="description" content="What a speech recognizer does to Igbo tone marks, clip by clip, from 21 recordings and a real evaluation.">
+<meta name="description" content="What facebook/omniASR-CTC-1B does to Igbo tone and dot-below marks across 21 single-speaker clips, with Levenshtein CER/WER profiles, alignment estimates, and method checks.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Igbo Tone-Loss Explorer — ml-viz">
+<meta property="og:description" content="Clip-by-clip diagnostic probe of Igbo tone and dot-below marks in facebook/omniASR-CTC-1B across 21 recordings, with Levenshtein CER/WER profiles and audit checks.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/igbo-tone-loss/">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="../shared/theme.css">
 <style>
   .split { display: grid; grid-template-columns: minmax(230px, .62fr) minmax(0, 1.6fr); gap: 14px; align-items: start; }
@@ -15,7 +20,7 @@
   .clip { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 9px; padding: 7px 8px; cursor: pointer; font: 14px var(--sans); color: var(--ink); }
   .clip:hover { background: var(--surface-2); }
   .clip[aria-current="true"] { background: var(--surface-2); border-color: var(--line); font-weight: 600; }
-  .clip .n { font: 12px var(--mono); color: var(--muted); min-width: 2ch; }
+  .clip .n { font: 12px var(--mono); color: var(--muted); min-width: 2.2ch; }
   .clip .ep { margin-left: auto; font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
   .chip { display: inline-block; font: 600 12px var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 99px; padding: 3px 9px; margin: 0 6px 6px 0; color: var(--muted); }
   .said { font-size: 1.35rem; line-height: 1.9; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; overflow-wrap: anywhere; }
@@ -23,8 +28,10 @@
   .m-tone { color: var(--warn); font-weight: 700; background: color-mix(in srgb, var(--warn) 16%, transparent); border-radius: 4px; padding: 0 1px; }
   .m-dot { color: var(--c-c); font-weight: 700; background: color-mix(in srgb, var(--c-c) 14%, transparent); border-radius: 4px; padding: 0 1px; }
   .m-both { color: var(--c-d); font-weight: 700; background: color-mix(in srgb, var(--c-d) 18%, transparent); border-radius: 4px; padding: 0 1px; }
-  .hl-tone .m-dot, .hl-tone .m-both { color: inherit; background: none; font-weight: inherit; }
-  .hl-dot .m-tone, .hl-dot .m-both { color: inherit; background: none; font-weight: inherit; }
+  .hl-tone .m-dot { color: inherit; background: none; font-weight: inherit; }
+  .hl-tone .m-both { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+  .hl-dot .m-tone { color: inherit; background: none; font-weight: inherit; }
+  .hl-dot .m-both { color: var(--c-c); background: color-mix(in srgb, var(--c-c) 14%, transparent); }
   .sq { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin: 0 2px 2px 0; }
   .sqrow { line-height: 0; margin-bottom: 8px; }
   .legend i.sw-tone { background: var(--warn); } .legend i.sw-dot { background: var(--c-c); } .legend i.sw-both { background: var(--c-d); }
@@ -35,6 +42,7 @@
   .collide .g { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
   .collide .g b { font-size: 1.05rem; display: block; margin-bottom: 4px; }
 </style>
+<script src="../shared/ui.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -46,8 +54,8 @@
     <button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
   </div>
   <h1>Igbo Tone-Loss Explorer</h1>
-  <p class="lede">Igbo is a tonal language: the same letters can mean different things depending on pitch, and careful writing marks tone with grave and acute accents. Igbo also uses vowels with a dot below (ị, ọ, ụ), which are letters in their own right. This page takes 21 recordings of one speaker, run through the speech recognizer <span class="mono">facebook/omniASR-CTC-1B</span>, and shows what happens to those marks. Data: <span class="badge measured">measured</span> from the <a href="https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots" target="_blank" rel="noopener">omniASR-igbo-blindspots</a> dataset. Scores and charts are <span class="badge simulated">computed live</span> from its rows.</p>
-  <div class="callout" style="margin-bottom:14px"><b>Read this first.</b> One speaker (Afikpo Igbo), 21 short clips, one model. This is a proof of concept that finds specific blind spots. It does not say how the model does on Igbo speech in general, and the category numbers below rest on 5 or 6 clips each.</div>
+  <p class="lede">Igbo is a tonal language where pitch distinguishes words and careful orthography marks tone with grave and acute accents alongside dot-below vowels (ị, ọ, ụ). This page inspects 21 recordings from one speaker, run through <span class="mono">facebook/omniASR-CTC-1B</span>, and compares the model output against the author's unreviewed reference transcripts. Data: <span class="badge measured">measured</span> from <a href="https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots" target="_blank" rel="noopener">omniASR-igbo-blindspots</a>, extracted from the audited evaluation repo. Scores and charts are <span class="badge simulated">computed live</span> from those 21 rows.</p>
+  <div class="callout" style="margin-bottom:14px"><b>Read this first.</b> One speaker (Afikpo Igbo), 21 short clips, one model, single-annotator unreviewed references (evidence ceiling: <b>E2</b> — descriptive counts and alignment conditional on those references). The four task categories mix languages (4 Igbo + 2 Yoruba in tonal; 1 Pidgin in code-switching; 1 French in domain). This is a diagnostic probe, not a prevalence estimate for Igbo ASR or a test of acoustic tone perception.</div>
 
   <div class="tabs" role="tablist" id="tabs">
     <button class="tab" role="tab" aria-selected="true" data-p="p1">1. Clip by clip</button>
@@ -64,9 +72,9 @@
       <div>
         <div class="card">
           <div class="row-head"><div id="clipChips"></div><a id="clipLink" href="#" target="_blank" rel="noopener" class="small">Listen to this clip on Hugging Face</a></div>
-          <span class="lbl" style="margin-top:0">What was said (reference transcript)</span>
+          <span class="lbl" style="margin-top:0">Reference transcript (single annotator, unreviewed)</span>
           <div class="said" id="said"></div>
-          <span class="lbl">The same words with tone marks removed</span>
+          <span class="lbl">Reference with tone marks removed (dot-below kept)</span>
           <div class="said" id="blind" style="font-size:1.1rem"></div>
           <span class="lbl">What the model wrote</span>
           <div class="said" id="wrote"></div>
@@ -76,7 +84,8 @@
           <div class="legend"><span><i class="sw-tone"></i>tone mark (grave, acute)</span><span><i class="sw-dot"></i>dot-below letter (ị ọ ụ)</span><span><i class="sw-both"></i>both on one letter</span></div>
         </div>
         <div class="card"><div class="grid kpis" id="clipK"></div><div class="small" id="clipNote" style="margin-top:10px"></div>
-          <span class="lbl">Position by position (alignment estimate, see tab 4)</span><div class="grid kpis" id="clipAlignK"></div><div id="clipAlign" style="margin-top:10px"></div></div>
+          <span class="lbl">Transcription error profiles (Levenshtein CER &amp; WER)</span><div class="grid kpis" id="clipErrK"></div>
+          <span class="lbl">Position by position (legacy alignment estimate, see tab 4)</span><div class="grid kpis" id="clipAlignK"></div><div id="clipAlign" style="margin-top:10px"></div></div>
       </div>
     </div>
   </section>
@@ -86,13 +95,15 @@
     <div class="card">
       <div class="row-head"><h2>Four ways to score the same marks</h2><span class="small" id="countCheck"></span></div>
       <div class="controls">
-        <div class="ctl" style="min-width:auto"><label>Metric</label>
-          <div class="seg" id="metSeg"><button data-v="drop" aria-pressed="true">Drop rate</button><button data-v="net" aria-pressed="false">Net loss</button><button data-v="hall" aria-pressed="false">Hallucination rate</button><button data-v="der" aria-pressed="false">DER</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Mark metric</label>
+          <div class="seg" id="metSeg"><button data-v="drop" aria-pressed="true">Drop rate</button><button data-v="net" aria-pressed="false">Net loss</button><button data-v="added" aria-pressed="false">Added rate</button><button data-v="der" aria-pressed="false">DER</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Table text-error profile</label>
+          <div class="seg" id="cerSeg"></div></div>
       </div>
       <div style="overflow-x:auto"><svg class="chart" style="min-width:560px" id="scoreSvg" role="img" aria-label="Score by category"></svg></div>
       <div class="small" id="metDef" style="margin:6px 0 10px"></div>
       <div style="overflow-x:auto"><table class="t" id="scoreTable"></table></div>
-      <div class="small" style="margin-top:8px">Whiskers are 95% bootstrap intervals, 10,000 resamples of the clips in each group, computed in your browser. With 5 or 6 clips per category they are wide, which is the honest picture.</div>
+      <div class="small" style="margin-top:8px">Whiskers show the exploratory clip-level 95% bootstrap spread (10,000 resamples computed in your browser) for historical comparison. In the audited evaluation repo, all intervals below 10 informative clips per language-based group are <b>withdrawn</b> because 5–6 dependent clips from one speaker cannot support population error bars.</div>
     </div>
     <div class="card">
       <div class="row-head"><h2>Why one category gives two different numbers</h2><div class="ctl" style="min-width:auto"><div class="seg" id="whySeg"></div></div></div>
@@ -112,9 +123,12 @@
       <div class="callout" id="typeNote" style="margin-top:10px"></div>
     </div>
     <div class="card">
-      <h2>What tone-blind transcription collapses</h2>
-      <div class="small">Words from the 21 reference transcripts that are spelled differently only by tone marks. Remove the tone marks and they become one spelling.</div>
+      <h2>Written tone variants vs annotator inconsistency</h2>
+      <div class="small">Comparing tone-stripped spellings across the 21 references turns up two very different things: repeated written patterns inside clips 06 and 07, and the same word marked differently across clips by one annotator.</div>
+      <span class="lbl">Within-clip written variants (author's intended forms, unverified at E0)</span>
       <div class="collide" id="collide"></div>
+      <span class="lbl">Cross-clip orthographic inconsistency (same word, different marking)</span>
+      <div class="collide" id="inconsist"></div>
       <div class="callout" id="collideNote" style="margin-top:10px"></div>
     </div>
   </section>
@@ -123,7 +137,7 @@
   <section class="panel" id="p4" hidden>
     <div class="card">
       <div class="row-head"><h2>Beyond counting: are the marks in the right place?</h2><span class="badge simulated">alignment estimate</span></div>
-      <div class="small">The dataset's scores compare how many marks there are. That cannot tell a correct mark from a wrong one: if the reference has an acute accent and the model writes a dot-below letter in the same spot, the count still matches. Here the reference and the model output are lined up letter by letter (ignoring marks), and each expected mark is checked at its aligned position. This is my extension, not the dataset's metric, and the alignment can mis-pair letters when the output is badly garbled.</div>
+      <div class="small">Count-based scores cannot tell a correct mark from a wrong one: if the reference has an acute accent and the model writes a dot-below letter in the same spot, the count still matches. Here the reference and model output are lined up letter by letter (ignoring marks), and each expected mark is checked at its aligned position. Note: this view uses the legacy combined-mark rule; in the audited repo's base-letter-aware tone-only recount on the 4 Igbo tonal clips, <b>0 of 32</b> reference tone marks are reproduced (28 missing on a matching base letter, 4 on substituted base letters, 3 inserted in clip 09).</div>
       <div class="controls" style="margin-top:12px"><div class="ctl" style="min-width:auto"><label>Group</label><div class="seg" id="alSeg"></div></div></div>
       <div id="alViz"></div>
       <div class="grid kpis" id="alK" style="margin-top:8px"></div>
@@ -141,13 +155,14 @@
   <section class="panel" id="p5" hidden>
     <div class="card">
       <div class="row-head"><h2>Why resample clips, not marks, and why more iterations do not help</h2><div class="ctl" style="min-width:auto"><div class="seg" id="bsSeg"></div></div></div>
-      <div class="small">Drop rate, bootstrap 95% interval. A bootstrap redraws the data with replacement many times and looks at how much the statistic moves. The unit you redraw decides the answer.</div>
+      <div class="small">Drop rate, exploratory 95% bootstrap spread. A bootstrap redraws data with replacement many times and looks at how much the statistic moves. The resampling unit decides the width — and even clip-level intervals are withdrawn in the audited repo because no language group reaches 10 informative clips.</div>
       <div style="overflow-x:auto;margin-top:8px"><table class="t" id="bsTable"></table></div>
       <div class="callout" id="bsNote" style="margin-top:10px"></div>
     </div>
     <div class="card">
-      <h2>Does character error rate see tone loss?</h2>
-      <div class="small">One dot per clip that has expected marks. Horizontal: the dataset's character error rate. Vertical: share of expected marks dropped.</div>
+      <div class="row-head"><h2>Does character error rate see tone loss?</h2>
+        <div class="ctl" style="min-width:auto"><div class="seg" id="scatSeg"></div></div></div>
+      <div class="small">One dot per clip that has expected marks (n = 18 dependent clips). Switch between Levenshtein normalization profiles (<span class="mono">strict</span>, <span class="mono">tone_stripped</span>, <span class="mono">base_letters</span>, <span class="mono">legacy</span>) and the CSV's original <span class="mono">difflib</span> dissimilarity score to see how base-letter errors and mark loss separate.</div>
       <div style="overflow-x:auto"><svg class="chart" style="min-width:520px" id="scatSvg" role="img" aria-label="CER against drop rate"></svg></div>
       <div class="legend" id="scatLegend"></div>
       <div class="callout" id="scatNote" style="margin-top:10px"></div>
@@ -155,26 +170,25 @@
     <div class="card">
       <h2>What this can and cannot show</h2>
       <div class="grid two" style="margin-top:6px">
-        <div><h3 style="color:var(--good)">What it supports</h3><ul class="small" style="margin:6px 0 0 18px;padding:0;color:var(--ink)">
-          <li>On these clips, the model's output lacks most of the tone marks in the reference.</li>
-          <li>The loss is concentrated in the clips built to test tone, and it shows up even when the output has marks (they are often the wrong ones).</li>
-          <li>Character error rate alone does not flag it.</li></ul></div>
+        <div><h3 style="color:var(--good)">What it supports (up to E2)</h3><ul class="small" style="margin:6px 0 0 18px;padding:0;color:var(--ink)">
+          <li>Conditional on the author's references, the output text on these clips carries far fewer tone marks than the references.</li>
+          <li>On the 4 Igbo tonal clips, none of the 32 reference tone marks is reproduced under base-letter-aware alignment; all 3 output tone marks appear in clip 09 whose reference has none.</li>
+          <li>Separating <span class="mono">strict</span> CER (0.416 on the 4 Igbo tonal clips) from <span class="mono">tone_stripped</span> (0.197) and <span class="mono">base_letters</span> (0.121) shows that transcription errors and mark loss occur together and must be measured separately.</li></ul></div>
         <div><h3 style="color:var(--bad)">What it does not show</h3><ul class="small" style="margin:6px 0 0 18px;padding:0;color:var(--ink)">
-          <li>That other speakers, dialects or recording conditions behave the same: one speaker, 21 clips.</li>
-          <li>That other models behave this way: one model.</li>
-          <li>Why it happens. Marks added to the monotone clip suggest the output is not tightly tied to the audio there, but a mechanism needs controlled experiments such as resynthesized pitch.</li>
-          <li>That the reference is the only valid transcription: one annotator.</li>
-          <li>That counts are alignment-exact: tab 4 is an estimate.</li>
-          <li>Anything about control clips beyond their role as controls: Yoruba, French and Pidgin rows sit inside category totals.</li></ul></div>
+          <li>That other speakers, dialects or recording conditions behave the same: one speaker, 21 clips, one session/device.</li>
+          <li>That other models behave this way: one model (<span class="mono">omnilingual-asr 0.1.0</span> also ignores the <span class="mono">lang</span> argument for CTC models).</li>
+          <li>Why it happens or whether the model perceives acoustic pitch. Clip 09 was spoken with flatter intonation than clip 08 (F0 SD 1.59 vs 2.71 semitones, one production each), not verified monotone, and added dot-below letters there may be valid orthography.</li>
+          <li>That any reference tone mark, word gloss, or minimal-pair contrast is correct: single annotator, no independent fluent-Igbo review (<span class="mono">U-1</span>).</li>
+          <li>Clean category comparisons: clips 01–05 use a 16 kHz / 22 kbps export chain with digital-silence gaps while clips 06–21 are 48 kHz / 65 kbps, and Yoruba, French and Pidgin controls sit inside the historical task categories.</li></ul></div>
       </div>
     </div>
   </section>
 
-  <footer class="site">Source: <a href="https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots" target="_blank" rel="noopener">Chiz/omniASR-igbo-blindspots</a> (21 rows, train split) and <a href="https://github.com/chizkidd/igbo-asr-tonal-evaluation" target="_blank" rel="noopener">igbo-asr-tonal-evaluation</a>. Rows are numbered 0 to 20 in viewer order. Mark counts follow a rule that reproduces the dataset's own expected and produced counts for all 21 rows: count each letter that carries a grave, acute, macron or dot below. Character error rates are the dataset's reported values. The categories include control clips in Yoruba, French and Nigerian Pidgin.</footer>
+  <footer class="site">Source: <a href="https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots" target="_blank" rel="noopener">Chiz/omniASR-igbo-blindspots</a> (21 clips, 1-based clip IDs 01 to 21) and <a href="https://github.com/chizkidd/igbo-asr-tonal-evaluation" target="_blank" rel="noopener">igbo-asr-tonal-evaluation</a> (extracted from audited metadata and verified against <span class="mono">canonical_results.csv</span>). Mark counts follow a rule that reproduces the dataset's expected and produced counts for all 21 clips: count each letter carrying a grave, acute, macron or dot-below. Levenshtein CER/WER profiles follow <span class="mono">docs/ANALYSIS_SPEC.md</span>.</footer>
 </div>
 
 <script>
-const ROWS = [{"id": 0, "cat": "script_hallucination", "sub": "personal_names", "lang": "ibo_Latn", "gt": "Aha m bụ Chukwuemeka. Nna m bụ Obiora. Nne m bụ Ngozi.", "out": "ahambụ cheku emeka nnam bụ ọbiọra nnem bụ ngọzi", "cer": 0.485, "e": 3, "p": 6}, {"id": 1, "cat": "script_hallucination", "sub": "greetings", "lang": "ibo_Latn", "gt": "Nnọọ. Kedu ka ị mere? Ọ dị mma. Daalụ.", "out": "nọ kedo ke imere ọ dị mma daalụ", "cer": 0.188, "e": 6, "p": 4}, {"id": 2, "cat": "script_hallucination", "sub": "numeric", "lang": "ibo_Latn", "gt": "Otu, abụọ, atọ, anọ, ise, isii, asaa, asatọ, itoolu, iri.", "out": "ọtu abuọ atọ anọ ise isi asa asatọ ìtọlu iri", "cer": 0.208, "e": 5, "p": 7}, {"id": 3, "cat": "script_hallucination", "sub": "idiomatic", "lang": "ibo_Latn", "gt": "Onye aghala nwanne ya.", "out": "onje agalá wánẹ yá", "cer": 0.4, "e": 0, "p": 4}, {"id": 4, "cat": "script_hallucination", "sub": "prosody", "lang": "ibo_Latn", "gt": "Aha m bụ Chizoba. Kedu ka ị mere taa? Ọ dị mma.", "out": "aham bụ chizọba kedu ke imereta ọ dị mmaa", "cer": 0.159, "e": 4, "p": 4}, {"id": 5, "cat": "tonal_diacritics", "sub": "minimal_pair", "lang": "ibo_Latn", "gt": "Akwa, akwa, akwa. Akwà, akwà, akwà. Àkwà, àkwà, àkwà. Ákwá, ákwá, ákwá.", "out": "akua akua akua akua akwa akwa akwa akua akwa ọkua ọkua ọkua", "cer": 0.6, "e": 15, "p": 3}, {"id": 6, "cat": "tonal_diacritics", "sub": "minimal_pair", "lang": "ibo_Latn", "gt": "Oke, oke, oke. Òkè, òkè, òkè. Ọkè, ọkè, ọkè.", "out": "oke oke oke oke oke oke oke oke oki", "cer": 0.418, "e": 12, "p": 0}, {"id": 7, "cat": "tonal_diacritics", "sub": "high_density", "lang": "ibo_Latn", "gt": "Ọ nà-èrì ọ̀jị̀ n'ụ̀tụ̀tụ̀.", "out": "ọ na eri ọjị n'ututu", "cer": 0.435, "e": 9, "p": 3}, {"id": 8, "cat": "tonal_diacritics", "sub": "monotone", "lang": "ibo_Latn", "gt": "O na-eri oji n'ututu.", "out": "ọne rị ọjí nụ tútú", "cer": 0.744, "e": 0, "p": 7}, {"id": 9, "cat": "tonal_diacritics", "sub": "control_language", "lang": "yor_Latn", "gt": "Kí ló dé, kí ló ṣe lẹ́?", "out": "kílode kílo ṣele", "cer": 0.385, "e": 7, "p": 3}, {"id": 10, "cat": "code_switching", "sub": "en_to_ig", "lang": "mixed", "gt": "I'm going to the ọgbọ today with my ụmụnne.", "out": "iam going today ogbo today with my umun ne", "cer": 0.224, "e": 4, "p": 0}, {"id": 11, "cat": "code_switching", "sub": "ig_to_en", "lang": "mixed", "gt": "M ga-eje shopping taa. M chọrọ credit card m.", "out": "nga eje shọpịnta nchọrọ kridịkad m", "cer": 0.367, "e": 2, "p": 5}, {"id": 12, "cat": "code_switching", "sub": "sentence_level", "lang": "mixed", "gt": "I need rice. M chọrọ ji. I want yam. M chọrọ akpu.", "out": "i nied ric nchọrọ ji i wọnt yam nchọrọ akpụ", "cer": 0.183, "e": 4, "p": 6}, {"id": 13, "cat": "code_switching", "sub": "with_diacritics", "lang": "mixed", "gt": "The ụlọ is beautiful. My ụmụaka are playing.", "out": "te ulọ is beautiful my umuaka a playing", "cer": 0.133, "e": 4, "p": 1}, {"id": 14, "cat": "code_switching", "sub": "control_pidgin", "lang": "pcm_Latn", "gt": "I wan chop rice. Abeg, give me water.", "out": "i want chop rice i beg give me water", "cer": 0.096, "e": 0, "p": 0}, {"id": 15, "cat": "cultural_context", "sub": "geographic", "lang": "ibo_Latn", "gt": "M bi na Enugu. Nnà m sị Owerri. M ga Onitsha.", "out": "mbị na ịnugu nnamsigo weri nga ọnịcha", "cer": 0.39, "e": 2, "p": 4}, {"id": 16, "cat": "cultural_context", "sub": "culinary", "lang": "mixed", "gt": "M na-eri jollof rice na egusi soup. Ọ tọrọ ụtọ.", "out": "emna iri jelọfres na egusi suup ọtọrụ ụtọ", "cer": 0.25, "e": 5, "p": 6}, {"id": 17, "cat": "cultural_context", "sub": "idiomatic", "lang": "ibo_Latn", "gt": "Ọnwa na-agbanwe, anyanwụ na-agbanwe, ma ala adịghị agbanwe.", "out": "owuana agbawe ayawu na agbawe mala adege agbawe", "cer": 0.264, "e": 4, "p": 0}, {"id": 18, "cat": "cultural_context", "sub": "control_language", "lang": "fra_Latn", "gt": "Bonjour, comment ça va? Je m'appelle Chizoba. J'habite à Paris.", "out": "bondu komosova že ma pelčizoba jea bit apari", "cer": 0.402, "e": 1, "p": 0}, {"id": 19, "cat": "cultural_context", "sub": "noise_robustness", "lang": "ibo_Latn", "gt": "Aha m bụ Chizoba. Kedu ka ị mere taa? Ọ dị mma.", "out": "aha mbụchizọba kidụka imereta ọ dị mma", "cer": 0.2, "e": 4, "p": 5}, {"id": 20, "cat": "tonal_diacritics", "sub": "control_formal", "lang": "yor_Latn", "gt": "Ẹ káàárọ̀. Báwo ni?", "out": "ekaọrọ bawọ ni", "cer": 0.455, "e": 6, "p": 3}];
+const ROWS = [{"id":1,"clip_id":"01","row_idx":0,"file":"01_script_names.wav","cat":"script_hallucination","sub":"personal_names","lang":"ibo_Latn","group":"igbo_other","gt":"Aha m bụ Chukwuemeka. Nna m bụ Obiora. Nne m bụ Ngozi.","out":"ahambụ cheku emeka nnam bụ ọbiọra nnem bụ ngọzi","e":3,"p":6,"difflib":0.485,"cer_strict_d":10,"cer_strict_n":51,"cer_tone_d":10,"cer_tone_n":51,"cer_base_d":7,"cer_base_n":51,"cer_legacy_d":13,"cer_legacy_n":54,"wer_strict_d":10,"wer_strict_n":12,"wer_base_d":8,"wer_base_n":12},{"id":2,"clip_id":"02","row_idx":1,"file":"02_script_formal.wav","cat":"script_hallucination","sub":"greetings","lang":"ibo_Latn","group":"igbo_other","gt":"Nnọọ. Kedu ka ị mere? Ọ dị mma. Daalụ.","out":"nọ kedo ke imere ọ dị mma daalụ","e":6,"p":4,"difflib":0.188,"cer_strict_d":6,"cer_strict_n":34,"cer_tone_d":6,"cer_tone_n":34,"cer_base_d":5,"cer_base_n":34,"cer_legacy_d":10,"cer_legacy_n":38,"wer_strict_d":5,"wer_strict_n":9,"wer_base_d":5,"wer_base_n":9},{"id":3,"clip_id":"03","row_idx":2,"file":"03_script_numbers.wav","cat":"script_hallucination","sub":"numeric","lang":"ibo_Latn","group":"igbo_other","gt":"Otu, abụọ, atọ, anọ, ise, isii, asaa, asatọ, itoolu, iri.","out":"ọtu abuọ atọ anọ ise isi asa asatọ ìtọlu iri","e":5,"p":7,"difflib":0.208,"cer_strict_d":7,"cer_strict_n":47,"cer_tone_d":6,"cer_tone_n":47,"cer_base_d":3,"cer_base_n":47,"cer_legacy_d":17,"cer_legacy_n":57,"wer_strict_d":5,"wer_strict_n":10,"wer_base_d":3,"wer_base_n":10},{"id":4,"clip_id":"04","row_idx":3,"file":"04_script_proverb.wav","cat":"script_hallucination","sub":"idiomatic","lang":"ibo_Latn","group":"igbo_other","gt":"Onye aghala nwanne ya.","out":"onje agalá wánẹ yá","e":0,"p":4,"difflib":0.4,"cer_strict_d":8,"cer_strict_n":21,"cer_tone_d":5,"cer_tone_n":21,"cer_base_d":4,"cer_base_n":21,"cer_legacy_d":9,"cer_legacy_n":22,"wer_strict_d":4,"wer_strict_n":4,"wer_base_d":3,"wer_base_n":4},{"id":5,"clip_id":"05","row_idx":4,"file":"05_script_slow.wav","cat":"script_hallucination","sub":"prosody","lang":"ibo_Latn","group":"igbo_other","gt":"Aha m bụ Chizoba. Kedu ka ị mere taa? Ọ dị mma.","out":"aham bụ chizọba kedu ke imereta ọ dị mmaa","e":4,"p":4,"difflib":0.159,"cer_strict_d":8,"cer_strict_n":44,"cer_tone_d":8,"cer_tone_n":44,"cer_base_d":6,"cer_base_n":44,"cer_legacy_d":10,"cer_legacy_n":47,"wer_strict_d":8,"wer_strict_n":12,"wer_base_d":7,"wer_base_n":12},{"id":6,"clip_id":"06","row_idx":5,"file":"06_tonal_akwa.wav","cat":"tonal_diacritics","sub":"minimal_pair","lang":"ibo_Latn","group":"igbo_tonal_pilot","gt":"Akwa, akwa, akwa. Akwà, akwà, akwà. Àkwà, àkwà, àkwà. Ákwá, ákwá, ákwá.","out":"akua akua akua akua akwa akwa akwa akua akwa ọkua ọkua ọkua","e":15,"p":3,"difflib":0.6,"cer_strict_d":23,"cer_strict_n":59,"cer_tone_d":11,"cer_tone_n":59,"cer_base_d":11,"cer_base_n":59,"cer_legacy_d":35,"cer_legacy_n":71,"wer_strict_d":12,"wer_strict_n":12,"wer_base_d":8,"wer_base_n":12},{"id":7,"clip_id":"07","row_idx":6,"file":"07_tonal_oke.wav","cat":"tonal_diacritics","sub":"minimal_pair","lang":"ibo_Latn","group":"igbo_tonal_pilot","gt":"Oke, oke, oke. Òkè, òkè, òkè. Ọkè, ọkè, ọkè.","out":"oke oke oke oke oke oke oke oke oki","e":12,"p":0,"difflib":0.418,"cer_strict_d":12,"cer_strict_n":35,"cer_tone_d":4,"cer_tone_n":35,"cer_base_d":1,"cer_base_n":35,"cer_legacy_d":21,"cer_legacy_n":44,"wer_strict_d":6,"wer_strict_n":9,"wer_base_d":1,"wer_base_n":9},{"id":8,"clip_id":"08","row_idx":7,"file":"08_tonal_dense.wav","cat":"tonal_diacritics","sub":"high_density","lang":"ibo_Latn","group":"igbo_tonal_pilot","gt":"Ọ nà-èrì ọ̀jị̀ n'ụ̀tụ̀tụ̀.","out":"ọ na eri ọjị n'ututu","e":9,"p":3,"difflib":0.435,"cer_strict_d":11,"cer_strict_n":24,"cer_tone_d":3,"cer_tone_n":19,"cer_base_d":0,"cer_base_n":19,"cer_legacy_d":13,"cer_legacy_n":26,"wer_strict_d":4,"wer_strict_n":5,"wer_base_d":0,"wer_base_n":5},{"id":9,"clip_id":"09","row_idx":8,"file":"09_tonal_flat.wav","cat":"tonal_diacritics","sub":"monotone","lang":"ibo_Latn","group":"igbo_tonal_pilot","gt":"O na-eri oji n'ututu.","out":"ọne rị ọjí nụ tútú","e":0,"p":7,"difflib":0.744,"cer_strict_d":11,"cer_strict_n":19,"cer_tone_d":8,"cer_tone_n":19,"cer_base_d":4,"cer_base_n":19,"cer_legacy_d":13,"cer_legacy_n":21,"wer_strict_d":5,"wer_strict_n":5,"wer_base_d":5,"wer_base_n":5},{"id":10,"clip_id":"10","row_idx":9,"file":"10_tonal_yoruba.wav","cat":"tonal_diacritics","sub":"control_language","lang":"yor_Latn","group":"yoruba_control","gt":"Kí ló dé, kí ló ṣe lẹ́?","out":"kílode kílo ṣele","e":7,"p":3,"difflib":0.385,"cer_strict_d":9,"cer_strict_n":21,"cer_tone_d":5,"cer_tone_n":20,"cer_base_d":4,"cer_base_n":20,"cer_legacy_d":11,"cer_legacy_n":23,"wer_strict_d":7,"wer_strict_n":7,"wer_base_d":7,"wer_base_n":7},{"id":11,"clip_id":"11","row_idx":10,"file":"11_codeswitch_en2ig.wav","cat":"code_switching","sub":"en_to_ig","lang":"mixed","group":"mixed_code_switch","gt":"I'm going to the ọgbọ today with my ụmụnne.","out":"iam going today ogbo today with my umun ne","e":4,"p":0,"difflib":0.224,"cer_strict_d":10,"cer_strict_n":41,"cer_tone_d":10,"cer_tone_n":41,"cer_base_d":6,"cer_base_n":41,"cer_legacy_d":11,"cer_legacy_n":43,"wer_strict_d":6,"wer_strict_n":9,"wer_base_d":5,"wer_base_n":9},{"id":12,"clip_id":"12","row_idx":11,"file":"12_codeswitch_ig2en.wav","cat":"code_switching","sub":"ig_to_en","lang":"mixed","group":"mixed_code_switch","gt":"M ga-eje shopping taa. M chọrọ credit card m.","out":"nga eje shọpịnta nchọrọ kridịkad m","e":2,"p":5,"difflib":0.367,"cer_strict_d":17,"cer_strict_n":43,"cer_tone_d":17,"cer_tone_n":43,"cer_base_d":14,"cer_base_n":43,"cer_legacy_d":20,"cer_legacy_n":45,"wer_strict_d":8,"wer_strict_n":10,"wer_base_d":8,"wer_base_n":10},{"id":13,"clip_id":"13","row_idx":12,"file":"13_codeswitch_alternate.wav","cat":"code_switching","sub":"sentence_level","lang":"mixed","group":"mixed_code_switch","gt":"I need rice. M chọrọ ji. I want yam. M chọrọ akpu.","out":"i nied ric nchọrọ ji i wọnt yam nchọrọ akpụ","e":4,"p":6,"difflib":0.183,"cer_strict_d":8,"cer_strict_n":46,"cer_tone_d":8,"cer_tone_n":46,"cer_base_d":7,"cer_base_n":46,"cer_legacy_d":12,"cer_legacy_n":50,"wer_strict_d":8,"wer_strict_n":12,"wer_base_d":7,"wer_base_n":12},{"id":14,"clip_id":"14","row_idx":13,"file":"14_codeswitch_embedded.wav","cat":"code_switching","sub":"with_diacritics","lang":"mixed","group":"mixed_code_switch","gt":"The ụlọ is beautiful. My ụmụaka are playing.","out":"te ulọ is beautiful my umuaka a playing","e":4,"p":1,"difflib":0.133,"cer_strict_d":6,"cer_strict_n":42,"cer_tone_d":6,"cer_tone_n":42,"cer_base_d":3,"cer_base_n":42,"cer_legacy_d":8,"cer_legacy_n":44,"wer_strict_d":4,"wer_strict_n":8,"wer_base_d":2,"wer_base_n":8},{"id":15,"clip_id":"15","row_idx":14,"file":"15_codeswitch_pidgin.wav","cat":"code_switching","sub":"control_pidgin","lang":"pcm_Latn","group":"pidgin_control","gt":"I wan chop rice. Abeg, give me water.","out":"i want chop rice i beg give me water","e":0,"p":0,"difflib":0.096,"cer_strict_d":3,"cer_strict_n":34,"cer_tone_d":3,"cer_tone_n":34,"cer_base_d":3,"cer_base_n":34,"cer_legacy_d":6,"cer_legacy_n":37,"wer_strict_d":3,"wer_strict_n":8,"wer_base_d":3,"wer_base_n":8},{"id":16,"clip_id":"16","row_idx":15,"file":"16_context_places.wav","cat":"cultural_context","sub":"geographic","lang":"ibo_Latn","group":"igbo_other","gt":"M bi na Enugu. Nnà m sị Owerri. M ga Onitsha.","out":"mbị na ịnugu nnamsigo weri nga ọnịcha","e":2,"p":4,"difflib":0.39,"cer_strict_d":16,"cer_strict_n":42,"cer_tone_d":15,"cer_tone_n":42,"cer_base_d":11,"cer_base_n":42,"cer_legacy_d":19,"cer_legacy_n":45,"wer_strict_d":10,"wer_strict_n":11,"wer_base_d":10,"wer_base_n":11},{"id":17,"clip_id":"17","row_idx":16,"file":"17_context_food.wav","cat":"cultural_context","sub":"culinary","lang":"mixed","group":"mixed_code_switch","gt":"M na-eri jollof rice na egusi soup. Ọ tọrọ ụtọ.","out":"emna iri jelọfres na egusi suup ọtọrụ ụtọ","e":5,"p":6,"difflib":0.25,"cer_strict_d":13,"cer_strict_n":45,"cer_tone_d":13,"cer_tone_n":45,"cer_base_d":12,"cer_base_n":45,"cer_legacy_d":16,"cer_legacy_n":47,"wer_strict_d":8,"wer_strict_n":11,"wer_base_d":8,"wer_base_n":11},{"id":18,"clip_id":"18","row_idx":17,"file":"18_context_proverb.wav","cat":"cultural_context","sub":"idiomatic","lang":"ibo_Latn","group":"igbo_other","gt":"Ọnwa na-agbanwe, anyanwụ na-agbanwe, ma ala adịghị agbanwe.","out":"owuana agbawe ayawu na agbawe mala adege agbawe","e":4,"p":0,"difflib":0.264,"cer_strict_d":15,"cer_strict_n":56,"cer_tone_d":15,"cer_tone_n":56,"cer_base_d":13,"cer_base_n":56,"cer_legacy_d":20,"cer_legacy_n":59,"wer_strict_d":9,"wer_strict_n":10,"wer_base_d":9,"wer_base_n":10},{"id":19,"clip_id":"19","row_idx":18,"file":"19_context_french.wav","cat":"cultural_context","sub":"control_language","lang":"fra_Latn","group":"french_control","gt":"Bonjour, comment ça va? Je m'appelle Chizoba. J'habite à Paris.","out":"bondu komosova že ma pelčizoba jea bit apari","e":1,"p":0,"difflib":0.402,"cer_strict_d":25,"cer_strict_n":57,"cer_tone_d":24,"cer_tone_n":57,"cer_base_d":23,"cer_base_n":57,"cer_legacy_d":31,"cer_legacy_n":63,"wer_strict_d":10,"wer_strict_n":10,"wer_base_d":10,"wer_base_n":10},{"id":20,"clip_id":"20","row_idx":19,"file":"20_context_noise.wav","cat":"cultural_context","sub":"noise_robustness","lang":"ibo_Latn","group":"igbo_other","gt":"Aha m bụ Chizoba. Kedu ka ị mere taa? Ọ dị mma.","out":"aha mbụchizọba kidụka imereta ọ dị mma","e":4,"p":5,"difflib":0.2,"cer_strict_d":10,"cer_strict_n":44,"cer_tone_d":10,"cer_tone_n":44,"cer_base_d":7,"cer_base_n":44,"cer_legacy_d":13,"cer_legacy_n":47,"wer_strict_d":8,"wer_strict_n":12,"wer_base_d":8,"wer_base_n":12},{"id":21,"clip_id":"21","row_idx":20,"file":"21_tonal_yoruba_formal.wav","cat":"tonal_diacritics","sub":"control_formal","lang":"yor_Latn","group":"yoruba_control","gt":"Ẹ káàárọ̀. Báwo ni?","out":"ekaọrọ bawọ ni","e":6,"p":3,"difflib":0.455,"cer_strict_d":8,"cer_strict_n":17,"cer_tone_d":5,"cer_tone_n":16,"cer_base_d":3,"cer_base_n":16,"cer_legacy_d":10,"cer_legacy_n":19,"wer_strict_d":3,"wer_strict_n":4,"wer_base_d":2,"wer_base_n":4}];
 (function () {
 'use strict';
 const $ = (id) => document.getElementById(id);
@@ -187,86 +201,96 @@ const CATS = [
   ['code_switching', 'Language boundary', 'code switching'],
   ['cultural_context', 'Domain', 'cultural context'],
 ];
-$('themeBtn').onclick = () => {
-  const cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
-};
+
+if (window.mlViz) window.mlViz.initTheme('themeBtn');
 const seen = {};
-document.querySelectorAll('#tabs .tab').forEach((b) => b.onclick = () => {
-  document.querySelectorAll('#tabs .tab').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
-  document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.id !== b.dataset.p; });
-  if (!seen[b.dataset.p]) { seen[b.dataset.p] = true; ({ p2: initScore, p3: initTypes, p4: initAlign, p5: initChecks })[b.dataset.p]?.(); }
-});
+
 function seg(id, vals, cur, cb, label) {
   $(id).innerHTML = vals.map((v) => `<button data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label ? label(v) : v}</button>`).join('');
   $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cb(b.dataset.v); });
 }
 
-/* ---------- mark counting ---------- */
+/* ---------- mark counting & CER/WER helpers ---------- */
 const TONE = new Set([0x300, 0x301, 0x304]), DOT = 0x323, COUNTED = new Set([0x300, 0x301, 0x304, 0x323]);
 function clusters(s) { const out = []; for (const ch of s.normalize('NFD')) { if (/\p{M}/u.test(ch) && out.length) out[out.length - 1] += ch; else out.push(ch); } return out; }
 function kindOf(cl) { const m = [...cl.slice(1)].map((c) => c.codePointAt(0)); const t = m.some((x) => TONE.has(x)), d = m.includes(DOT); return t && d ? 'both' : t ? 'tone' : d ? 'dot' : m.some((x) => COUNTED.has(x)) ? 'other' : null; }
 function countMarks(s) { return clusters(s).filter((c) => kindOf(c)).length; }
 function kinds(s) { const k = { tone: 0, both: 0, dot: 0 }; clusters(s).forEach((c) => { const t = kindOf(c); if (t && k[t] !== undefined) k[t]++; }); return k; }
 function stripTone(s) { return [...s.normalize('NFD')].filter((c) => !TONE.has(c.codePointAt(0))).join('').normalize('NFC'); }
-function render(s, hl) { // marks highlighted; hl: all | tone | dot
+function render(s) {
   return clusters(s).map((c) => { const t = kindOf(c), txt = esc(c.normalize('NFC')); return t ? `<span class="m-${t === 'other' ? 'dot' : t}">${txt}</span>` : txt; }).join('');
 }
+
+const ERR_PROFILES = {
+  strict: { label: 'strict CER', clip: (r) => r.cer_strict_d / r.cer_strict_n, pooled: (rows) => rows.reduce((s, r) => s + r.cer_strict_d, 0) / rows.reduce((s, r) => s + r.cer_strict_n, 0), desc: 'Levenshtein CER (normalised NFC, marks kept)' },
+  tone: { label: 'tone-stripped CER', clip: (r) => r.cer_tone_d / r.cer_tone_n, pooled: (rows) => rows.reduce((s, r) => s + r.cer_tone_d, 0) / rows.reduce((s, r) => s + r.cer_tone_n, 0), desc: 'Levenshtein CER with tone marks removed, dot-below kept' },
+  base: { label: 'base-letters CER', clip: (r) => r.cer_base_d / r.cer_base_n, pooled: (rows) => rows.reduce((s, r) => s + r.cer_base_d, 0) / rows.reduce((s, r) => s + r.cer_base_n, 0), desc: 'Levenshtein CER with all combining marks removed' },
+  wer: { label: 'strict WER', clip: (r) => r.wer_strict_d / r.wer_strict_n, pooled: (rows) => rows.reduce((s, r) => s + r.wer_strict_d, 0) / rows.reduce((s, r) => s + r.wer_strict_n, 0), desc: 'Word error rate (strict normalisation, spacing-sensitive)' },
+  legacy: { label: 'legacy CER', clip: (r) => r.cer_legacy_d / r.cer_legacy_n, pooled: (rows) => rows.reduce((s, r) => s + r.cer_legacy_d, 0) / rows.reduce((s, r) => s + r.cer_legacy_n, 0), desc: 'Legacy Levenshtein CER (lowercased NFC, punctuation kept)' },
+  difflib: { label: 'difflib (CSV)', clip: (r) => r.difflib, pooled: null, desc: 'Historical CSV column: 1 - difflib.SequenceMatcher ratio (not Levenshtein)' },
+};
+
 ROWS.forEach((r) => { r.cE = countMarks(r.gt); r.cP = countMarks(r.out); r.D = Math.max(0, r.e - r.p); r.H = Math.max(0, r.p - r.e); });
 const countsOK = ROWS.filter((r) => r.cE === r.e && r.cP === r.p).length;
 
 /* =========================================================
    1. CLIPS
    ========================================================= */
-let cur = 5, hl = 'all';
+let cur = 6, hl = 'all';
 (function () {
   let h = '';
   CATS.forEach(([key, name]) => {
     h += `<h3>${name}</h3>`;
-    ROWS.filter((r) => r.cat === key).forEach((r) => { h += `<button class="clip" role="option" data-i="${r.id}"><span class="n">${r.id}</span><span>${r.sub.replace(/_/g, ' ')}</span><span class="ep" title="expected marks to produced marks">${r.e} to ${r.p}</span></button>`; });
+    ROWS.filter((r) => r.cat === key).forEach((r) => { h += `<button class="clip" role="option" data-i="${r.id}"><span class="n">${r.clip_id}</span><span>${r.sub.replace(/_/g, ' ')}</span><span class="ep" title="expected marks to produced marks">${r.e} to ${r.p}</span></button>`; });
   });
   $('clipList').innerHTML = h;
   $('clipList').querySelectorAll('.clip').forEach((b) => b.onclick = () => { cur = +b.dataset.i; drawClip(); });
   seg('hlSeg', ['all', 'tone', 'dot'], hl, (v) => { hl = v; drawClip(); }, (v) => ({ all: 'all marks', tone: 'tone only', dot: 'dot-below only' }[v]));
 })();
 function drawClip() {
-  const r = ROWS[cur];
-  $('clipList').querySelectorAll('.clip').forEach((b) => b.setAttribute('aria-current', String(+b.dataset.i === cur)));
-  $('clipChips').innerHTML = `<span class="chip">clip ${r.id}</span><span class="chip">${r.cat.replace(/_/g, ' ')}</span><span class="chip">${r.sub.replace(/_/g, ' ')}</span><span class="chip">${r.lang}</span>`;
-  $('clipLink').href = `https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots/viewer/default/train?row=${r.id}`;
+  const r = ROWS.find((x) => x.id === cur) || ROWS[0];
+  $('clipList').querySelectorAll('.clip').forEach((b) => b.setAttribute('aria-current', String(+b.dataset.i === r.id)));
+  $('clipChips').innerHTML = `<span class="chip">clip ${r.clip_id}</span><span class="chip">${r.group}</span><span class="chip">${r.cat.replace(/_/g, ' ')}</span><span class="chip">${r.sub.replace(/_/g, ' ')}</span><span class="chip">${r.lang}</span>`;
+  $('clipLink').href = `https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots/viewer/default/train?row=${r.row_idx}`;
   const cls = hl === 'tone' ? 'hl-tone' : hl === 'dot' ? 'hl-dot' : '';
   $('said').className = 'said ' + cls; $('wrote').className = 'said ' + cls;
   $('said').innerHTML = render(r.gt); $('wrote').innerHTML = render(r.out);
   $('blind').innerHTML = esc(stripTone(r.gt));
   const sq = (n, c) => Array.from({ length: n }, () => `<span class="sq" style="background:${c}"></span>`).join('');
-  $('clipK').innerHTML = kpi('', r.e, 'marks expected') + kpi('', r.p, 'marks produced') + kpi('a', r.D, 'dropped') + kpi('c', r.H, 'added that were not there') + kpi('', r.cer.toFixed(3), 'character error rate (as reported)');
+  $('clipK').innerHTML = kpi('', r.e, 'marks expected') + kpi('', r.p, 'marks produced') + kpi('a', r.D, 'dropped') + kpi('c', r.H, 'added beyond reference');
+  $('clipErrK').innerHTML =
+    kpi('', ERR_PROFILES.strict.clip(r).toFixed(3), 'strict CER') +
+    kpi('', ERR_PROFILES.tone.clip(r).toFixed(3), 'tone-stripped CER') +
+    kpi('', ERR_PROFILES.base.clip(r).toFixed(3), 'base-letters CER') +
+    kpi('', ERR_PROFILES.wer.clip(r).toFixed(3), 'strict WER') +
+    kpi('', r.difflib.toFixed(3), 'CSV difflib (legacy)');
   let note = '';
-  if (r.e === 0 && r.p > 0) note = `The reference has no marks here, yet the model wrote ${r.p}. Adding marks that were not spoken is the opposite failure to dropping them.`;
-  else if (r.e === 0) note = 'No marks expected and none produced.';
-  else if (r.D === r.e) note = `Every one of the ${r.e} expected marks is missing from the output.`;
-  else if (r.D > 0) note = `${r.D} of ${r.e} expected marks are missing${r.H ? `, and ${r.H} extra ${r.H === 1 ? 'mark was' : 'marks were'} added` : ''}.`;
-  else note = `The output has at least as many marks as expected${r.H ? ` (${r.H} extra)` : ''}. Counts do not prove each mark is the right one, only that none are missing in number.`;
+  if (r.e === 0 && r.p > 0) note = `The reference has no marks here, yet the model wrote ${r.p}. Because references are single-annotator and unreviewed, added dot-below letters here may reflect standard orthography rather than model hallucinations.`;
+  else if (r.e === 0) note = 'No marks in the reference and none produced.';
+  else if (r.D === r.e) note = `Every one of the ${r.e} reference marks is missing from the output.`;
+  else if (r.D > 0) note = `${r.D} of ${r.e} reference marks are missing${r.H ? `, and ${r.H} extra ${r.H === 1 ? 'mark was' : 'marks were'} added` : ''}.`;
+  else note = `The output has at least as many marks as the reference${r.H ? ` (${r.H} extra)` : ''}. Counts do not prove each mark is the right one, only that none are missing in number.`;
   drawClipAlign(r);
-  $('clipNote').innerHTML = `<div class="sqrow" title="expected">${sq(r.e, 'var(--c-b)')}${r.e ? '' : '<span class="small">none expected</span>'}</div><div class="sqrow" title="produced">${sq(Math.min(r.p, r.e), 'var(--c-b)')}${sq(r.H, 'var(--c-c)')}</div>` + note + ` <span class="small">Top row: marks expected. Bottom row: marks produced, green where the count is met, blue where it exceeds the reference.</span>`;
+  $('clipNote').innerHTML = `<div class="sqrow" title="expected">${sq(r.e, 'var(--c-b)')}${r.e ? '' : '<span class="small">none in reference</span>'}</div><div class="sqrow" title="produced">${sq(Math.min(r.p, r.e), 'var(--c-b)')}${sq(r.H, 'var(--c-c)')}</div>` + note + ` <span class="small">Top row: marks in reference. Bottom row: marks produced, green up to reference count, blue where output exceeds reference.</span>`;
 }
 
 /* =========================================================
    2. SCOREBOARD
    ========================================================= */
 const MET = {
-  drop: { name: 'Drop rate', f: (t) => t.D / t.E, def: 'Dropped marks divided by expected marks. Counted clip by clip, so a clip that adds marks cannot hide another clip that loses them.' },
+  drop: { name: 'Drop rate', f: (t) => t.D / t.E, def: 'Dropped marks divided by expected marks (D / E). Counted clip by clip, so a clip that adds marks cannot hide another clip that loses them.' },
   net: { name: 'Net loss', f: (t) => (t.E - t.P) / t.E, def: '(expected minus produced) divided by expected, over all clips pooled. Added marks cancel dropped ones, and the result goes negative when the model adds more than it loses.' },
-  hall: { name: 'Hallucination rate', f: (t) => t.H / t.E, def: 'Marks the model added beyond what the reference has, divided by expected marks.' },
-  der: { name: 'DER', f: (t) => (t.D + t.H) / t.E, def: 'Diacritic error rate: dropped plus added marks, divided by expected marks. It can exceed 100%.' },
+  added: { name: 'Added rate', f: (t) => t.H / t.E, def: 'Marks added beyond the reference count divided by expected marks (H / E). Note: H / P (35.2% overall) is the separate share of produced marks that are additions; added dot-below marks may be valid orthography omitted from unreviewed references.' },
+  der: { name: 'DER', f: (t) => (t.D + t.H) / t.E, def: 'Diacritic error rate: dropped plus added marks, divided by expected marks ((D + H) / E). It can exceed 100%.' },
 };
 const groups = () => [...CATS.map(([k, n]) => ({ key: k, name: n, rows: ROWS.filter((r) => r.cat === k) })), { key: 'all', name: 'Overall', rows: ROWS }];
 const tot = (rows) => rows.reduce((a, r) => ({ n: a.n + 1, E: a.E + r.e, P: a.P + r.p, D: a.D + r.D, H: a.H + r.H }), { n: 0, E: 0, P: 0, D: 0, H: 0 });
-let metric = 'drop', boot = null, whyKey = 'tonal_diacritics';
+let metric = 'drop', cerProf = 'strict', boot = null, whyKey = 'tonal_diacritics';
 function bootstrap() {
   let a = 1234567; const rand = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   const out = {}, B = 10000;
   groups().forEach((g) => {
-    const res = { drop: [], net: [], hall: [], der: [] }, n = g.rows.length;
+    const res = { drop: [], net: [], added: [], der: [] }, n = g.rows.length;
     for (let b = 0; b < B; b++) {
       let t = { E: 0, P: 0, D: 0, H: 0 };
       for (let i = 0; i < n; i++) { const r = g.rows[Math.floor(rand() * n)]; t.E += r.e; t.P += r.p; t.D += r.D; t.H += r.H; }
@@ -280,29 +304,35 @@ function bootstrap() {
 function initScore() {
   boot = bootstrap();
   $('countCheck').innerHTML = countsOK === ROWS.length ? `counting rule matches the dataset on ${countsOK} of ${ROWS.length} clips` : `counting rule matches on ${countsOK} of ${ROWS.length} clips`;
-  seg('metSeg', ['drop', 'net', 'hall', 'der'], metric, (v) => { metric = v; drawScore(); }, (v) => MET[v].name);
+  seg('metSeg', ['drop', 'net', 'added', 'der'], metric, (v) => { metric = v; drawScore(); }, (v) => MET[v].name);
+  seg('cerSeg', ['strict', 'tone', 'base', 'wer', 'legacy', 'difflib'], cerProf, (v) => { cerProf = v; drawScore(); }, (v) => ERR_PROFILES[v].label);
   seg('whySeg', CATS.map((c) => c[0]).concat('all'), whyKey, (v) => { whyKey = v; drawWhy(); }, (v) => (v === 'all' ? 'Overall' : CATS.find((c) => c[0] === v)[1]));
   drawScore(); drawWhy();
 }
 function drawScore() {
-  const G = groups(), W = 760, H = 320, m = { l: 52, r: 16, t: 20, b: 52 }, M = MET[metric];
+  const G = groups(), W = 760, H = 320, m = { l: 52, r: 16, t: 20, b: 52 }, M = MET[metric], EP = ERR_PROFILES[cerProf];
   const vals = G.map((g) => M.f(tot(g.rows))), cis = G.map((g) => boot[g.key][metric]);
-  const lo = Math.min(0, ...cis.map((c) => c.lo), ...vals) , hi = Math.max(1, ...cis.map((c) => c.hi), ...vals);
+  const lo = Math.min(0, ...cis.map((c) => c.lo), ...vals), hi = Math.max(1, ...cis.map((c) => c.hi), ...vals);
   const y = (v) => H - m.b - (v - lo) / (hi - lo) * (H - m.t - m.b), bw = (W - m.l - m.r) / G.length;
   let b = '';
   for (let t = Math.ceil(lo * 10) / 10; t <= hi + 1e-9; t += 0.25) { const v = Math.round(t * 4) / 4; b += `<line class="grid-l" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v * 100)}%</text>`; }
   b += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${y(0)}" y2="${y(0)}"/>`;
   G.forEach((g, i) => {
     const cx = m.l + bw * (i + .5), v = vals[i], c = cis[i], w = Math.min(70, bw - 30), col = g.key === 'all' ? 'var(--ink)' : (v < 0 ? 'var(--c-c)' : 'var(--c-a)');
-    b += `<rect x="${cx - w / 2}" y="${Math.min(y(0), y(v))}" width="${w}" height="${Math.abs(y(v) - y(0))}" rx="4" fill="${col}" opacity="${g.key === 'all' ? .8 : 1}"><title>${g.name}: ${pct(v)} (95% interval ${pct(c.lo, 0)} to ${pct(c.hi, 0)})</title></rect>`;
+    b += `<rect x="${cx - w / 2}" y="${Math.min(y(0), y(v))}" width="${w}" height="${Math.abs(y(v) - y(0))}" rx="4" fill="${col}" opacity="${g.key === 'all' ? .8 : 1}"><title>${g.name}: ${pct(v)} (exploratory 95% spread ${pct(c.lo, 0)} to ${pct(c.hi, 0)})</title></rect>`;
     b += `<line x1="${cx}" x2="${cx}" y1="${y(c.lo)}" y2="${y(c.hi)}" stroke="var(--ink)" stroke-width="1.6"/><line x1="${cx - 6}" x2="${cx + 6}" y1="${y(c.lo)}" y2="${y(c.lo)}" stroke="var(--ink)" stroke-width="1.6"/><line x1="${cx - 6}" x2="${cx + 6}" y1="${y(c.hi)}" y2="${y(c.hi)}" stroke="var(--ink)" stroke-width="1.6"/>`;
     b += `<text x="${cx + w / 2 + 6}" y="${y(v) + (v >= 0 ? 12 : -4)}" class="lbl-strong" style="font-size:12px">${pct(v)}</text>`;
     b += `<text x="${cx}" y="${H - 28}" text-anchor="middle" class="lbl-strong">${g.name}</text><text x="${cx}" y="${H - 14}" text-anchor="middle">${g.rows.length} clips, ${tot(g.rows).E} marks</text>`;
   });
   $('scoreSvg').innerHTML = b; $('scoreSvg').setAttribute('viewBox', `0 0 ${W} ${H}`);
-  $('metDef').innerHTML = `<b>${M.name}.</b> ${M.def}`;
-  let t = '<tr><th>group</th><th>clips</th><th>expected</th><th>produced</th><th>dropped</th><th>added</th><th>drop rate</th><th>net loss</th><th>added rate</th><th>DER</th><th>mean CER</th></tr>';
-  G.forEach((g) => { const T = tot(g.rows), cer = g.rows.reduce((s, r) => s + r.cer, 0) / g.rows.length; t += `<tr><td>${g.name}</td><td>${T.n}</td><td>${T.E}</td><td>${T.P}</td><td>${T.D}</td><td>${T.H}</td><td>${pct(MET.drop.f(T))}</td><td>${pct(MET.net.f(T))}</td><td>${pct(MET.hall.f(T))}</td><td>${pct(MET.der.f(T))}</td><td>${pct(cer)}</td></tr>`; });
+  $('metDef').innerHTML = `<b>${M.name}.</b> ${M.def} <span class="small">Table profile: ${EP.desc}.</span>`;
+  let t = `<tr><th>group</th><th>clips</th><th>expected</th><th>produced</th><th>dropped</th><th>added</th><th>drop rate</th><th>net loss</th><th>added rate</th><th>DER</th><th>${EP.label} (pooled)</th><th>${EP.label} (mean)</th></tr>`;
+  G.forEach((g) => {
+    const T = tot(g.rows);
+    const meanV = g.rows.reduce((s, r) => s + EP.clip(r), 0) / g.rows.length;
+    const poolV = EP.pooled ? pct(EP.pooled(g.rows)) : 'n/a';
+    t += `<tr><td>${g.name}</td><td>${T.n}</td><td>${T.E}</td><td>${T.P}</td><td>${T.D}</td><td>${T.H}</td><td>${pct(MET.drop.f(T))}</td><td>${pct(MET.net.f(T))}</td><td>${pct(MET.added.f(T))}</td><td>${pct(MET.der.f(T))}</td><td>${poolV}</td><td>${pct(meanV)}</td></tr>`;
+  });
   $('scoreTable').innerHTML = t;
 }
 function drawWhy() {
@@ -310,18 +340,18 @@ function drawWhy() {
   const sq = (n, c) => Array.from({ length: n }, () => `<span class="sq" style="background:${c}"></span>`).join('');
   $('whyViz').innerHTML = `<span class="lbl" style="margin-top:0">Marks expected (${T.E})</span><div class="sqrow">${sq(kept, 'var(--c-b)')}${sq(T.D, 'var(--c-a)')}</div><span class="lbl">Marks produced (${T.P})</span><div class="sqrow">${sq(kept, 'var(--c-b)')}${sq(T.H, 'var(--c-c)')}</div>
     <div class="legend"><span><i style="background:var(--c-b)"></i>marks that are there (${kept})</span><span><i style="background:var(--c-a)"></i>dropped (${T.D})</span><span><i style="background:var(--c-c)"></i>added (${T.H})</span></div>`;
-  $('whyEq').innerHTML = `net loss &nbsp;&nbsp;= (E - P) / E = (${T.E} - ${T.P}) / ${T.E} = <b>${pct(MET.net.f(T))}</b><br>drop rate &nbsp;= D / E &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${T.D} / ${T.E} = <b>${pct(MET.drop.f(T))}</b><br>added rate = H / E &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${T.H} / ${T.E} = <b>${pct(MET.hall.f(T))}</b><br>DER &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= (D + H) / E &nbsp;= ${T.D + T.H} / ${T.E} = <b>${pct(MET.der.f(T))}</b>`;
+  $('whyEq').innerHTML = `net loss &nbsp;&nbsp;= (E - P) / E = (${T.E} - ${T.P}) / ${T.E} = <b>${pct(MET.net.f(T))}</b><br>drop rate &nbsp;= D / E &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${T.D} / ${T.E} = <b>${pct(MET.drop.f(T))}</b><br>added rate = H / E &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${T.H} / ${T.E} = <b>${pct(MET.added.f(T))}</b><br>DER &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= (D + H) / E &nbsp;= ${T.D + T.H} / ${T.E} = <b>${pct(MET.der.f(T))}</b>`;
   const gap = MET.drop.f(T) - MET.net.f(T);
-  $('whyNote').innerHTML = T.H === 0 ? 'Nothing was added here, so net loss and drop rate agree.' : `The model <b>added ${T.H}</b> marks that were never there, in clips where it also failed to produce others. Net loss lets those cancel against the drops, which makes the model look <b>${(gap * 100).toFixed(1)} percentage points</b> better than the drop rate says. Neither number is wrong: net loss answers "how many marks are missing overall", drop rate answers "how many of the real marks were lost". Counts are totals per clip, not a check that each produced mark is the right one.`;
+  $('whyNote').innerHTML = T.H === 0 ? 'Nothing was added here, so net loss and drop rate agree.' : `The model <b>added ${T.H}</b> marks beyond the reference count, in clips where it also failed to produce others. Net loss lets those cancel against the drops, which makes the model look <b>${(gap * 100).toFixed(1)} percentage points</b> better than the drop rate says. Neither number is wrong: net loss answers "how many marks are missing overall", drop rate answers "how many reference marks were lost". Counts are totals per clip, not a check that each produced mark is the right one.`;
 }
 
 /* =========================================================
-   3. MARK TYPES + COLLISIONS
+   3. MARK TYPES + WRITTEN VARIANTS VS INCONSISTENCY
    ========================================================= */
 function initTypes() {
-  const G = groups().slice(0, 4), W = 760, rowH = 54, H = 20 + G.length * rowH * 2 / 1.0 * 0.62 + 34;
+  const G = groups().slice(0, 4), W = 760;
   const sums = G.map((g) => { const a = { tone: 0, both: 0, dot: 0 }, b = { tone: 0, both: 0, dot: 0 }; g.rows.forEach((r) => { const x = kinds(r.gt), y = kinds(r.out); for (const k in a) { a[k] += x[k]; b[k] += y[k]; } }); return { g, a, b }; });
-  const max = Math.max(...sums.flatMap((s) => [s.a, s.b].map((o) => o.tone + o.both + o.dot))), x0 = 225, sx = (v) => x0 + v / max * (W - x0 - 60);
+  const max = Math.max(...sums.flatMap((s) => [s.a, s.b].map((o) => o.tone + o.both + o.dot))), x0 = 225;
   let b = '', yy = 10;
   sums.forEach((s) => {
     b += `<text x="0" y="${yy + 26}" class="lbl-strong" style="font-size:12px">${s.g.name}</text>`;
@@ -335,18 +365,37 @@ function initTypes() {
   $('typeSvg').innerHTML = b; $('typeSvg').setAttribute('viewBox', `0 0 ${W} ${yy}`);
   const t = sums[1], toneSaid = t.a.tone + t.a.both, toneWrote = t.b.tone + t.b.both, s0 = sums[0], toneHall = s0.b.tone + s0.b.both;
   const other = sums.filter((_, i) => i !== 1), otherDot = other.reduce((s, x) => s + x.a.dot, 0), otherAll = other.reduce((s, x) => s + x.a.dot + x.a.tone + x.a.both, 0);
-  $('typeNote').innerHTML = `In the phonemic tone clips the reference has <b>${toneSaid}</b> letters carrying a tone mark and the model output has <b>${toneWrote}</b>. That is where tone is actually lost. In the other three categories, <b>${otherDot} of ${otherAll}</b> expected marks are dot-below letters (ị, ọ, ụ), which are part of the spelling rather than tone, so their scores say little about tone. The model also wrote <b>${toneHall}</b> tone marks in the cross-lingual clips where the reference has none.`;
-  // collisions
-  const map = new Map();
-  ROWS.forEach((r) => { (r.gt.normalize('NFC').toLowerCase().match(/[\p{L}\p{M}]+(?:['’-][\p{L}\p{M}]+)*/gu) || []).forEach((w) => { const k = stripTone(w); if (!map.has(k)) map.set(k, new Set()); map.get(k).add(w); }); });
-  const coll = [...map.entries()].filter(([, v]) => v.size > 1).sort((a, c) => c[1].size - a[1].size);
-  $('collide').innerHTML = coll.map(([k, v]) => `<div class="g"><b>${esc(k)}</b>${[...v].sort().map((w) => `<span class="m-tone" style="margin-right:8px;font-size:1.05rem">${esc(w)}</span>`).join('')}<div class="small" style="margin-top:4px">${v.size} spellings become 1</div></div>`).join('');
-  const forms = coll.reduce((s, [, v]) => s + v.size, 0);
-  $('collideNote').innerHTML = `<b>${forms}</b> distinct written forms in these transcripts collapse into <b>${coll.length}</b> tone-blind spellings. A transcript without tone marks cannot tell them apart, and the reader has to guess from context. The clip with the four <b>akwa</b> spellings is the dataset's cleanest test of this.`;
+  $('typeNote').innerHTML = `In the historical phonemic tone category (4 Igbo + 2 Yoruba clips), the references have <b>${toneSaid}</b> letters carrying a tone mark (32 Igbo, 11 Yoruba) and the model output has <b>${toneWrote}</b> (3 Igbo, 2 Yoruba). In the other three categories, <b>${otherDot} of ${otherAll}</b> reference marks are dot-below letters (ị, ọ, ụ), which are part of spelling rather than tone, so their scores say little about tone. The model also wrote <b>${toneHall}</b> tone marks in the cross-lingual clips where the references have none.`;
+
+  // Separate within-clip repeated written variants from cross-clip annotator inconsistencies.
+  const within = [], cross = new Map();
+  const wordRe = /[\p{L}\p{M}]+(?:['’-][\p{L}\p{M}]+)*/gu;
+  ROWS.forEach((r) => {
+    const local = new Map();
+    (r.gt.normalize('NFC').toLowerCase().match(wordRe) || []).forEach((w) => {
+      const k = stripTone(w);
+      if (!local.has(k)) local.set(k, new Set());
+      local.get(k).add(w);
+      if (!cross.has(k)) cross.set(k, { forms: new Set(), clips: new Set() });
+      cross.get(k).forms.add(w);
+      cross.get(k).clips.add(r.clip_id);
+    });
+    local.forEach((forms, k) => {
+      if (forms.size > 1) within.push({ clip_id: r.clip_id, key: k, forms: [...forms].sort() });
+    });
+  });
+  const withinKeys = new Set(within.map((x) => x.key));
+  const incons = [...cross.entries()]
+    .filter(([k, v]) => v.forms.size > 1 && !withinKeys.has(k))
+    .map(([k, v]) => ({ key: k, forms: [...v.forms].sort(), clips: [...v.clips].sort() }));
+
+  $('collide').innerHTML = within.map((x) => `<div class="g"><b>${esc(x.key)} <span class="small">(clip ${x.clip_id})</span></b>${x.forms.map((w) => `<span class="m-tone" style="margin-right:8px;font-size:1.05rem">${esc(w)}</span>`).join('')}<div class="small" style="margin-top:4px">${x.forms.length} written patterns share one tone-stripped spelling</div></div>`).join('');
+  $('inconsist').innerHTML = incons.map((x) => `<div class="g"><b>${esc(x.key)} <span class="small">(clips ${x.clips.join(', ')})</span></b>${x.forms.map((w) => `<span class="m-dot" style="margin-right:8px;font-size:1.05rem">${esc(w)}</span>`).join('')}<div class="small" style="margin-top:4px">Same word marked inconsistently across clips</div></div>`).join('');
+  $('collideNote').innerHTML = `Clips 06 (<span class="mono">akwa</span>, 4 written patterns) and 07 (<span class="mono">oke</span>, 2 tone-only patterns plus <span class="mono">ọkè</span> which also differs by dot-below) produce zero tone marks in the output and do not vary by written pattern. Word glosses and minimal-pair claims are withheld (<b>E0</b>) because no independent fluent-Igbo reviewer has verified the written patterns, and an exploratory pitch check on clip 06 did not show four distinct F0 contours. Separately, <span class="mono">nna/nnà</span> and <span class="mono">na-eri/nà-èrì</span> are <b>not</b> different words — they reflect inconsistent tone marking across clips by one annotator.`;
 }
 
 /* =========================================================
-   ALIGNMENT (extension, not the dataset's metric)
+   4. ALIGNMENT (legacy combined-mark estimate)
    ========================================================= */
 const MARKNAME = { 0x300: 'grave', 0x301: 'acute', 0x304: 'macron', 0x323: 'dot-below' };
 function alUnits(str) {
@@ -384,7 +433,7 @@ function alignRow(r) {
   });
   return (r.al = res);
 }
-window.__ig = { alignRow, ROWS };
+window.__ig = { alignRow, ROWS, ERR_PROFILES };
 function alTot(rows) { return rows.reduce((t, r) => { const a = alignRow(r); t.correct += a.correct; t.wrong += a.wrong; t.missing += a.missing; t.inserted += a.inserted; t.E += r.e; t.P += r.p; return t; }, { correct: 0, wrong: 0, missing: 0, inserted: 0, E: 0, P: 0 }); }
 function drawClipAlign(r) {
   const a = alignRow(r);
@@ -404,9 +453,8 @@ function drawAlign() {
   $('alViz').innerHTML = `<span class="lbl">Expected marks (${T.E}), by what the model did at that spot</span><div class="sqrow">${sq(T.correct, 'var(--c-b)')}${sq(T.wrong, 'var(--c-c)')}${sq(T.missing, 'var(--c-a)')}</div>
     <span class="lbl">Produced marks (${T.P}), by whether they belong there</span><div class="sqrow">${sq(T.correct, 'var(--c-b)')}${sq(T.wrong, 'var(--c-c)')}${sq(T.inserted, 'var(--c-d)')}</div>
     <div class="legend"><span><i style="background:var(--c-b)"></i>right mark, right place (${T.correct})</span><span><i style="background:var(--c-c)"></i>different mark in that place (${T.wrong})</span><span><i style="background:var(--c-a)"></i>missing (${T.missing})</span><span><i style="background:var(--c-d)"></i>added where none expected (${T.inserted})</span></div>`;
-  $('alK').innerHTML = kpi('', `${kept} of ${C.E}`, 'marks "kept" by the count-based score') + kpi('b', `${T.correct} of ${T.E}`, 'actually right and in place') + kpi('c', pct(T.correct / T.E, 0), 'share of expected marks reproduced exactly');
-  $('alNote').innerHTML = `The count-based score treats <b>${kept}</b> of ${C.E} expected marks as kept. Lined up letter by letter, only <b>${T.correct}</b> are the right mark in the right place. The gap is made of ${T.wrong} cases where a different mark sits on the expected letter and marks that landed on letters where none belongs. So the count-based loss numbers are, if anything, <b>too kind to the model</b>, though alignment on garbled output is itself imperfect.`;
-  // confusion
+  $('alK').innerHTML = kpi('', `${kept} of ${C.E}`, 'marks "kept" by the count-based score') + kpi('b', `${T.correct} of ${T.E}`, 'actually right and in place') + kpi('c', pct(T.correct / T.E, 0), 'share of expected marks reproduced');
+  $('alNote').innerHTML = `The count-based score treats <b>${kept}</b> of ${C.E} expected marks as kept. Lined up letter by letter, only <b>${T.correct}</b> match in place (${T.wrong} carry a different mark and others land on unmarked letters). So count-based loss numbers are, if anything, <b>generous to the model</b>, though alignment on garbled output is itself imperfect and this legacy rule does not check whether the base letter matches.`;
   const conf = {}, cols = new Set(['none']);
   rows.forEach((r) => alignRow(r).conf.forEach(([a, b]) => { if (a === '(none)') return; (conf[a] = conf[a] || {})[b] = (conf[a][b] || 0) + 1; cols.add(b); }));
   const colList = ['none'].concat([...cols].filter((c) => c !== 'none').sort()), rowList = Object.keys(conf).sort((x, y) => Object.values(conf[y]).reduce((p, q) => p + q, 0) - Object.values(conf[x]).reduce((p, q) => p + q, 0));
@@ -418,10 +466,10 @@ function drawAlign() {
 }
 
 /* =========================================================
-   METHOD CHECKS
+   5. METHOD CHECKS
    ========================================================= */
-let bsKey = 'tonal_diacritics';
-function ciOf(units, iters, seed, mode) { // units: [{E,D}] for clip mode; marks mode uses flags
+let bsKey = 'tonal_diacritics', scatProf = 'strict';
+function ciOf(units, iters, seed, mode) {
   let a = seed >>> 0; const rand = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   const v = [], n = units.length;
   for (let b = 0; b < iters; b++) {
@@ -432,36 +480,47 @@ function ciOf(units, iters, seed, mode) { // units: [{E,D}] for clip mode; marks
 }
 function initChecks() {
   seg('bsSeg', CATS.map((c) => c[0]).concat('all'), bsKey, (v) => { bsKey = v; drawBs(); }, (v) => (v === 'all' ? 'Overall' : CATS.find((c) => c[0] === v)[1]));
+  seg('scatSeg', ['strict', 'tone', 'base', 'legacy', 'difflib'], scatProf, (v) => { scatProf = v; drawScatter(); }, (v) => ERR_PROFILES[v].label);
   drawBs(); drawScatter();
 }
 function drawBs() {
   const rows = bsKey === 'all' ? ROWS : ROWS.filter((r) => r.cat === bsKey), clips = rows.map((r) => ({ E: r.e, D: r.D })), marks = [];
   rows.forEach((r) => { for (let i = 0; i < r.e; i++) marks.push(i < r.D ? 1 : 0); });
-  const T = tot(rows), pt = T.D / T.E; let h = `<tr><th>bootstrap iterations</th><th>resample clips (${clips.length} units)</th><th>width</th><th>resample marks (${marks.length} units)</th><th>width</th></tr>`;
+  const T = tot(rows), pt = T.D / T.E; let h = `<tr><th>bootstrap iterations</th><th>resample clips (${clips.length} clips)</th><th>width</th><th>resample marks (${marks.length} marks)</th><th>width</th></tr>`;
   const W = {};
   [100, 1000, 10000, 100000].forEach((it) => { const c = ciOf(clips, it, 99, 'clips'), m = ciOf(marks, it, 99, 'marks'); W[it] = [c, m]; h += `<tr><td>${it.toLocaleString('en-US')}</td><td>${pct(c[0], 0)} to ${pct(c[1], 0)}</td><td>${((c[1] - c[0]) * 100).toFixed(0)} pts</td><td>${pct(m[0], 0)} to ${pct(m[1], 0)}</td><td>${((m[1] - m[0]) * 100).toFixed(0)} pts</td></tr>`; });
   $('bsTable').innerHTML = h;
   const cw = (W[10000][0][1] - W[10000][0][0]) * 100, mw = (W[10000][1][1] - W[10000][1][0]) * 100;
-  $('bsNote').innerHTML = `Point estimate: <b>${pct(pt)}</b>. Going from 100 to 100,000 iterations only steadies the endpoints: the interval stays about as wide, because <b>more iterations do not add information, more independent clips do</b>. Resampling individual marks gives a ${mw < cw ? `narrower interval (${mw.toFixed(0)} against ${cw.toFixed(0)} points)` : 'similar interval'}, but that is false precision: marks inside one clip share a speaker, a recording and a word, so they are not independent. Resampling whole clips respects that structure, which is why the clip-level interval is the one to report.`;
+  $('bsNote').innerHTML = `Point estimate: <b>${pct(pt)}</b>. Going from 100 to 100,000 iterations only steadies the endpoints: <b>more iterations do not add information, more clips and speakers do</b>. Resampling individual marks gives a ${mw < cw ? `narrower interval (${mw.toFixed(0)} against ${cw.toFixed(0)} points)` : 'similar interval'}, which is false precision because marks inside one clip share a recording and word. Clips are the resampling unit — not an independence claim, since all 21 clips share one speaker, one device/session, repeated word forms in clips 06–07, and the same sentence in 08–09. Because no language group reaches the 10-informative-clip floor, the audited evaluation repo withdraws all published intervals and reports counts plus leave-one-clip-out ranges only.`;
 }
 function drawScatter() {
-  const pts = ROWS.filter((r) => r.e > 0).map((r) => ({ x: r.cer, y: r.D / r.e, id: r.id, cat: r.cat })), W = 700, H = 340, m = { l: 52, r: 14, t: 30, b: 44 };
-  const sx = (v) => m.l + (v - 0) / 0.8 * (W - m.l - m.r), sy = (v) => H - m.b - v * (H - m.t - m.b), colr = { script_hallucination: 'var(--c-c)', tonal_diacritics: 'var(--warn)', code_switching: 'var(--c-b)', cultural_context: 'var(--c-d)' };
+  const EP = ERR_PROFILES[scatProf];
+  const pts = ROWS.filter((r) => r.e > 0).map((r) => ({ x: EP.clip(r), y: r.D / r.e, id: r.clip_id, cat: r.cat })), W = 700, H = 340, m = { l: 52, r: 14, t: 30, b: 44 };
+  const xmax = Math.max(0.8, Math.ceil(Math.max(...pts.map((p) => p.x)) * 5) / 5);
+  const sx = (v) => m.l + (v - 0) / xmax * (W - m.l - m.r), sy = (v) => H - m.b - v * (H - m.t - m.b), colr = { script_hallucination: 'var(--c-c)', tonal_diacritics: 'var(--warn)', code_switching: 'var(--c-b)', cultural_context: 'var(--c-d)' };
   let b = '';
   [0, .25, .5, .75, 1].forEach((v) => { b += `<line class="grid-l" x1="${m.l}" x2="${W - m.r}" y1="${sy(v)}" y2="${sy(v)}"/><text x="${m.l - 6}" y="${sy(v) + 4}" text-anchor="end">${Math.round(v * 100)}%</text>`; });
-  [0, .2, .4, .6, .8].forEach((v) => { b += `<text x="${sx(v)}" y="${H - m.b + 16}" text-anchor="middle">${v.toFixed(1)}</text>`; });
-  b += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/><text x="${(m.l + W - m.r) / 2}" y="${H - 6}" text-anchor="middle">character error rate (reported)</text><text x="4" y="11">share of expected marks dropped</text>`;
-  pts.forEach((p) => { b += `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="6" fill="${colr[p.cat]}" opacity=".85"><title>clip ${p.id}: CER ${p.x.toFixed(2)}, ${pct(p.y, 0)} of marks dropped</title></circle>`; });
+  for (let v = 0; v <= xmax + 1e-9; v += 0.2) b += `<text x="${sx(v)}" y="${H - m.b + 16}" text-anchor="middle">${v.toFixed(1)}</text>`;
+  b += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/><text x="${(m.l + W - m.r) / 2}" y="${H - 6}" text-anchor="middle">${EP.label}</text><text x="4" y="11">share of expected marks dropped</text>`;
+  pts.forEach((p) => { b += `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="6" fill="${colr[p.cat]}" opacity=".85"><title>clip ${p.id}: ${EP.label} ${p.x.toFixed(3)}, ${pct(p.y, 0)} of marks dropped</title></circle>`; });
   $('scatSvg').innerHTML = b; $('scatSvg').setAttribute('viewBox', `0 0 ${W} ${H}`);
   $('scatLegend').innerHTML = CATS.map(([k, n]) => `<span><i style="background:${colr[k]}"></i>${n}</span>`).join('');
   const n = pts.length, mx = pts.reduce((s, p) => s + p.x, 0) / n, my = pts.reduce((s, p) => s + p.y, 0) / n; let sxy = 0, sxx = 0, syy = 0;
   pts.forEach((p) => { sxy += (p.x - mx) * (p.y - my); sxx += (p.x - mx) ** 2; syy += (p.y - my) ** 2; });
   const r = sxy / Math.sqrt(sxx * syy), strength = Math.abs(r) < 0.3 ? 'weak' : Math.abs(r) < 0.6 ? 'moderate' : 'strong';
   const low = pts.filter((p) => p.x < 0.3 && p.y >= 0.75).length, hi = pts.filter((p) => p.x > 0.4 && p.y === 0).length;
-  $('scatNote').innerHTML = `Across these ${n} clips the correlation is <b>${r.toFixed(2)}</b>, a ${strength} link. ${low ? `${low} clips with a character error rate under 0.30 still lost at least 75% of their marks` : ''}${low && hi ? ', and ' : ''}${hi ? `${hi} ${hi === 1 ? 'clip' : 'clips'} with a rate above 0.40 lost none` : ''}. Character error rate answers "how far is the text from the reference", not "were the meaningful marks kept", so a low score can sit on top of heavy tone loss. With ${n} points this is a pattern to check on more data, not a measured correlation to rely on.`;
+  $('scatNote').innerHTML = `Exploratory Pearson correlation across ${n} dependent clips under <b>${EP.label}</b>: <b>r = ${r.toFixed(2)}</b> (${strength}). ${low ? `${low} ${low === 1 ? 'clip' : 'clips'} below 0.30 still lost at least 75% of expected marks` : ''}${low && hi ? ', and ' : ''}${hi ? `${hi} ${hi === 1 ? 'clip' : 'clips'} above 0.40 lost none` : ''}. Compare <span class="mono">strict CER</span> vs <span class="mono">base-letters CER</span> to see how much error remains even with every mark stripped (0.180 pooled overall; 0.121 on the 4 Igbo tonal clips). With ${n} clips from one speaker, this is weak exploratory evidence either way.`;
 }
 
 drawClip();
+const tabInits = { p2: initScore, p3: initTypes, p4: initAlign, p5: initChecks };
+if (window.mlViz) {
+  window.mlViz.initTabs({
+    tablistId: 'tabs',
+    slugs: { p1: 'clips', p2: 'scoreboard', p3: 'marks', p4: 'aligned', p5: 'checks' },
+    onSelect: (pid) => { if (!seen[pid]) { seen[pid] = true; tabInits[pid]?.(); } },
+  });
+}
 })();
 </script>
 </body>
