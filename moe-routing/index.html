@@ -1,0 +1,1553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixture of Experts: Routing, Collapse &amp; Serving</title>
+<meta name="description" content="Explore sparse top-k MoE routing, expert capacity buffers and dropped tokens, router collapse vs Switch auxiliary loss and DeepSeek-V3 aux-loss-free bias, and active-vs-total parameter serving memory and bandwidth.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Mixture of Experts: Routing, Collapse &amp; Serving — ml-viz">
+<meta property="og:description" content="Interactive MoE explainer: top-k routing buffers, dropped tokens, dropless MoE, Switch L_aux vs DeepSeek-V3 dynamic bias, and coupon-collector serving roofline.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/moe-routing/">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="../shared/theme.css">
+<style>
+  .chart-wrap { overflow-x: auto; }
+  .chart-wrap svg { min-width: 540px; }
+  .chart-wrap.narrow svg { min-width: 420px; }
+  .stepline { font: .84rem var(--mono); background: var(--surface-2); padding: 10px 12px; border-radius: 10px; line-height: 1.65; overflow-x: auto; margin-top: 10px; }
+  .stepline b { color: var(--ink); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .mt { margin-top: 12px; }
+  .ctl.wide { min-width: 190px; }
+  .legend i.line { height: 3px; width: 16px; border-radius: 2px; vertical-align: 3px; }
+  .legend i.dash { height: 0; width: 16px; border-top: 2px dashed var(--ink); vertical-align: 3px; }
+  .pill { display: inline-block; font: 600 12px var(--mono); padding: 3px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); background: var(--surface-2); }
+  .pill.good { border-color: var(--good); color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .quick-btns { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .quick-btns .btn { padding: 4px 8px; font-size: 12px; border-radius: 7px; }
+  .quick-btns .btn.active { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .kpi.bad .v { color: var(--bad); }
+  .kpi.good .v { color: var(--good); }
+  .kpi.warn .v { color: var(--warn); }
+  table.t td.bad, .bad-txt { color: var(--bad); font-weight: 700; }
+  table.t td.good, .good-txt { color: var(--good); font-weight: 700; }
+  table.t tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 600; }
+  .tbl-wrap { overflow-x: auto; }
+  svg.chart text.num { font: 10px var(--mono); }
+  svg.chart text.slot-lbl { font: 9px var(--mono); pointer-events: none; }
+  svg.chart .interactive { cursor: pointer; }
+  svg.chart .interactive:hover { opacity: .88; }
+</style>
+<script src="../shared/ui.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a href="../">&larr; ml-viz</a>
+    <span class="sp"></span>
+    <a href="https://chizkidd.github.io/2026/08/10/mixture-of-experts/" target="_blank" rel="noopener">MoE blog post</a>
+    <button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
+  </div>
+
+  <h1>Mixture of Experts: Routing, Collapse &amp; Serving</h1>
+  <p class="lede">Sparse MoE replaces one monolithic FFN with <em>N</em> specialist experts and a router that activates only <em>top-k</em> per token. Decoupling total parameters from per-token FLOPs unlocks huge capacity&mdash;but creates three engineering problems: expert buffer overflow, router collapse during training, and batch-dependent serving memory bandwidth. Tabs 1&ndash;2 are <span class="badge simulated">computed live</span> from seeded browser simulations; Tab 3 combines <span class="badge published">published specs + formula</span>.</p>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" aria-selected="true" data-p="p1">1. Top-k routing &amp; capacity</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p2">2. Collapse &amp; load balancing</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p3">3. Active vs total params (serving)</button>
+  </div>
+
+  <!-- ===== TAB 1: TOP-K ROUTING & CAPACITY ===== -->
+  <section class="panel" id="p1">
+    <div class="card">
+      <div class="row-head">
+        <h2>Token-to-expert routing &amp; capacity buffers</h2>
+        <span class="badge simulated">computed live</span>
+      </div>
+      <div class="small" style="margin-bottom:10px">Each of the 32 tokens in a batch computes softmax router probabilities <em>p<sub>i</sub>(x) = softmax(h(x) / T)</em> and routes to its <em>top-k</em> experts. Fixed-buffer MoE caps each expert at <code>capacity = ceil(C &middot; T<sub>tok</sub> &middot; k / N)</code> slots: excess tokens overflow and are <b>dropped</b> (falling back to the residual stream), while unused slots become wasted padding. Toggle <b>Dropless MoE</b> to see variable-sized block-sparse execution eliminate both.</div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Experts <em>N</em></label><div class="seg" id="sN1"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Active <em>top-k</em></label><div class="seg" id="sK1"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Execution mode</label><div class="seg" id="sDrop1"></div></div>
+        <div class="ctl wide"><label for="rCap">Capacity factor <em>C</em> <span class="val" id="vCap">1.25</span></label><input type="range" id="rCap" min="0.75" max="2.00" step="0.05" value="1.25"></div>
+        <div class="ctl wide"><label for="rSkew">Router skew <span class="val" id="vSkew">0.70</span></label><input type="range" id="rSkew" min="0.00" max="2.50" step="0.10" value="0.70"></div>
+        <div class="ctl wide"><label for="rTemp">Temperature <em>T</em> <span class="val" id="vTemp">1.00</span></label><input type="range" id="rTemp" min="0.25" max="2.00" step="0.05" value="1.00"></div>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="bBatch" type="button">New batch</button>
+        <button class="btn" id="bBal1" type="button">Reset balanced</button>
+        <button class="btn" id="bOverflow" type="button">Trigger overflow</button>
+        <span class="small" id="batchSeedLbl"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <h3>Expert capacity buffers (32 tokens &times; <span id="lblSlots1">2</span> = <span id="lblTot1">64</span> routed slots)</h3>
+        <span class="small">Hover or tap any token block for routing details</span>
+      </div>
+      <div class="chart-wrap"><svg class="chart" id="c1a" viewBox="0 0 760 285" role="img" aria-label="Expert capacity buffer bars showing assigned tokens, empty padding slots, capacity threshold, and dropped overflow tokens"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--c-c)"></i>assigned (rank #1 expert)</span>
+        <span><i style="background:var(--c-b)"></i>assigned (rank #2+ expert)</span>
+        <span><i style="background:var(--bad)"></i>dropped (overflow &gt; capacity)</span>
+        <span><i class="hatch"></i>unused buffer padding</span>
+        <span><i class="dash" style="border-color:var(--warn)"></i>capacity limit</span>
+      </div>
+      <div class="stepline" id="step1"></div>
+      <div class="grid kpis mt" id="k1"></div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <h3>Token-to-expert routing probability matrix <em>p<sub>i</sub>(x<sub>t</sub>)</em></h3>
+        <span class="small">Cell shade = softmax probability &middot; dark outline = selected top-<em>k</em> &middot; red cross = dropped</span>
+      </div>
+      <div class="chart-wrap"><svg class="chart" id="c1b" viewBox="0 0 760 230" role="img" aria-label="Token-to-expert routing probability heatmap highlighting top-k selections and dropped assignments"></svg></div>
+    </div>
+
+    <div class="callout mt" id="n1"></div>
+  </section>
+
+  <!-- ===== TAB 2: COLLAPSE & LOAD BALANCING ===== -->
+  <section class="panel" id="p2" hidden>
+    <div class="card">
+      <div class="row-head">
+        <h2>Router collapse vs Switch aux loss vs DeepSeek-V3 bias</h2>
+        <span class="badge simulated">computed live</span>
+      </div>
+      <div class="small" style="margin-bottom:10px">Early experts that receive more tokens get more gradient updates, become better, and earn even higher router scores&mdash;starving the rest into <b>dead experts</b>. Compare 80 training steps under three regimes: (1) <b>No balancing</b>, (2) <b>Switch auxiliary loss</b> <code>L = L<sub>CE</sub> + &alpha;&middot;L<sub>aux</sub></code> (which pulls probabilities toward uniform but fights the LM gradient), and (3) <b>DeepSeek-V3 aux-loss-free bias</b> <code>b<sub>i</sub> &larr; b<sub>i</sub> + &gamma;&middot;sign(1/N &minus; f<sub>i</sub>)</code> applied <em>only</em> to top-<em>k</em> selection while keeping gating weights untouched.</div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Inspect expert shares</label><div class="seg" id="sMode2"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Experts <em>N</em></label><div class="seg" id="sN2"></div></div>
+        <div class="ctl wide"><label for="rAlpha">Switch &alpha;<sub>aux</sub> <span class="val" id="vAlpha">0.08</span></label><input type="range" id="rAlpha" min="0.00" max="0.25" step="0.01" value="0.08"></div>
+        <div class="ctl wide"><label for="rGamma">DeepSeek bias &gamma; <span class="val" id="vGamma">0.060</span></label><input type="range" id="rGamma" min="0.000" max="0.150" step="0.005" value="0.060"></div>
+      </div>
+      <div class="row">
+        <button class="btn" id="bSeed2" type="button">New random seed</button>
+        <button class="btn" id="bHighAlpha" type="button">Try high &alpha; (0.22)</button>
+        <button class="btn" id="bDef2" type="button">Reset defaults</button>
+        <span class="small" id="seed2Lbl"></span>
+      </div>
+    </div>
+
+    <div class="grid two mt">
+      <div class="card">
+        <h3 id="h2a">Expert load shares <em>f<sub>i</sub></em> over 80 steps</h3>
+        <div class="chart-wrap narrow"><svg class="chart" id="c2a" viewBox="0 0 500 290" role="img" aria-label="Per-expert token load share trajectories over 80 training steps"></svg></div>
+        <div class="legend" id="lg2a"></div>
+      </div>
+      <div class="card">
+        <h3>Max / Mean imbalance ratio (all 3 methods)</h3>
+        <div class="chart-wrap narrow"><svg class="chart" id="c2b" viewBox="0 0 500 290" role="img" aria-label="Comparison of max-to-mean expert load imbalance ratio across no balancing, Switch auxiliary loss, and DeepSeek-V3 bias"></svg></div>
+        <div class="legend">
+          <span><i class="line" style="background:var(--bad)"></i>No balancing (collapse)</span>
+          <span><i class="line" style="background:var(--c-a)"></i>Switch aux loss</span>
+          <span><i class="line" style="background:var(--c-b)"></i>DeepSeek aux-loss-free bias</span>
+          <span><i class="dash" style="border-color:var(--muted)"></i>1.0&times; perfect balance</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mt">
+      <div class="row-head">
+        <h3>End-of-run comparison (step 80)</h3>
+        <span class="small">Highlighted row matches the selected expert-share plot above</span>
+      </div>
+      <div class="grid kpis" id="k2"></div>
+      <div class="tbl-wrap mt" id="tbl2"></div>
+    </div>
+
+    <div class="callout mt" id="n2"></div>
+  </section>
+
+  <!-- ===== TAB 3: ACTIVE VS TOTAL PARAMS (SERVING) ===== -->
+  <section class="panel" id="p3" hidden>
+    <div class="card">
+      <div class="row-head">
+        <h2>The MoE serving paradox: active FLOPs vs total VRAM &amp; batch bandwidth</h2>
+        <span class="badge published">published specs + formula</span>
+      </div>
+      <div class="small" style="margin-bottom:10px">At batch size <em>B = 1</em>, an MoE model reads only its <b>active parameters</b> from HBM&mdash;giving dense-small speed with dense-large capacity. But as batch size <em>B</em> grows, independent tokens activate different experts: by coupon-collector expectation, a decode step hits <code>E[experts] = N(1 &minus; (1 &minus; k/N)<sup>B</sup>)</code> distinct experts, driving weight reads toward <b>all total parameters</b> while VRAM must <em>always</em> hold all <em>N</em> experts in memory.</div>
+      <div class="controls">
+        <div class="ctl"><label for="mSel">Model</label>
+          <select id="mSel">
+            <option value="qwen3-30b-a3b" selected>Qwen3-30B-A3B (30.5B / 3.3B active, N=128 k=8)</option>
+            <option value="mixtral-8x7b">Mixtral-8x7B (46.7B / 12.9B active, N=8 k=2)</option>
+            <option value="deepseek-v3">DeepSeek-V3 (671B / 37B active, N=256 k=8)</option>
+            <option value="llama-3.1-8b">Llama-3.1-8B (8.0B dense)</option>
+            <option value="llama-3.1-70b">Llama-3.1-70B (70.6B dense)</option>
+          </select>
+        </div>
+        <div class="ctl"><label for="gSel">GPU hardware</label>
+          <select id="gSel">
+            <option value="a100-80">1&times; A100 80GB SXM (2.04 TB/s)</option>
+            <option value="h100-80" selected>1&times; H100 80GB SXM (3.35 TB/s)</option>
+            <option value="h100-8x">8&times; H100 80GB SXM (640 GB, 26.8 TB/s)</option>
+            <option value="h200-8x">8&times; H200 141GB SXM (1128 GB, 38.4 TB/s)</option>
+          </select>
+        </div>
+        <div class="ctl" style="min-width:auto"><label>Weight precision</label><div class="seg" id="sPrec"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Context length <em>ctx</em></label><div class="seg" id="sCtx"></div></div>
+      </div>
+      <div class="controls" style="margin-bottom:0">
+        <div class="ctl wide" style="flex:1;min-width:240px"><label for="rBatch">Decode batch size <em>B</em> <span class="val" id="vBatch">1</span></label><input type="range" id="rBatch" min="1" max="256" step="1" value="1"></div>
+        <div class="quick-btns" id="qBatch"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="grid kpis" id="k3"></div>
+      <div class="mt">
+        <div class="row-head">
+          <h3>VRAM capacity budget (must hold ALL total weights + batch KV cache)</h3>
+          <span id="vramStatus"></span>
+        </div>
+        <div class="chart-wrap narrow"><svg class="chart" id="c3v" viewBox="0 0 760 72" role="img" aria-label="Horizontal stacked bar comparing total weight VRAM plus KV cache VRAM against GPU memory capacity"></svg></div>
+      </div>
+    </div>
+
+    <div class="grid two mt">
+      <div class="card">
+        <h3>Expected distinct experts hit per step <em>E[experts] / N</em></h3>
+        <div class="chart-wrap narrow"><svg class="chart" id="c3a" viewBox="0 0 500 290" role="img" aria-label="Coupon-collector curve of expected distinct experts activated per decode step as batch size grows"></svg></div>
+        <div class="legend">
+          <span><i class="line" style="background:var(--c-a)"></i>Mixtral-8x7B (N=8, k=2)</span>
+          <span><i class="line" style="background:var(--c-b)"></i>Qwen3-30B-A3B (N=128, k=8)</span>
+          <span><i class="line" style="background:var(--c-c)"></i>DeepSeek-V3 (N=256, k=8)</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Effective bytes read per generated token (GB/tok, log scale)</h3>
+        <div class="chart-wrap narrow"><svg class="chart" id="c3b" viewBox="0 0 500 290" role="img" aria-label="Effective HBM bytes read per generated token versus batch size comparing selected model with dense Llama baselines"></svg></div>
+        <div class="legend" id="lg3b"></div>
+      </div>
+    </div>
+
+    <div class="card mt">
+      <div class="row-head">
+        <h3>Published model comparison at current GPU, precision, <em>B</em> &amp; <em>ctx</em></h3>
+        <span class="small">Roofline ceiling ignores all-to-all expert-parallel communication &amp; kernel overhead</span>
+      </div>
+      <div class="tbl-wrap" id="tbl3"></div>
+    </div>
+
+    <div class="callout mt" id="n3"></div>
+  </section>
+
+  <footer class="site">
+    Grounded in <a href="https://chizkidd.github.io/2026/08/10/mixture-of-experts/" target="_blank" rel="noopener">Mixture of Experts</a> (Switch Transformer, GShard, Mixtral, OLMoE, DeepSeek-V3). Pure client-side JavaScript &amp; SVG; no external libraries.
+  </footer>
+</div>
+
+<script>
+/* Mixture of Experts (MoE) routing, load-balancing, and serving roofline core.
+   Pure functions, no DOM. Works in a browser (window.MOESIM) and in Node (module.exports). */
+(function (root) {
+  'use strict';
+
+  /* ---------- seeded RNG (mulberry32) & Box-Muller normal ---------- */
+  function mulberry32(a) {
+    a = a >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function makeNormal(rng) {
+    var spare = null;
+    return function () {
+      if (spare !== null) {
+        var out = spare;
+        spare = null;
+        return out;
+      }
+      var u = 0, v = 0;
+      while (u <= 1e-12) u = rng();
+      while (v <= 1e-12) v = rng();
+      var mag = Math.sqrt(-2.0 * Math.log(u));
+      spare = mag * Math.sin(2.0 * Math.PI * v);
+      return mag * Math.cos(2.0 * Math.PI * v);
+    };
+  }
+
+  /* ---------- numerically stable softmax + log-normalizer Z(x) ---------- */
+  function softmaxWithZ(logits, temp) {
+    var invT = 1 / Math.max(0.05, temp || 1);
+    var n = logits.length;
+    var scaled = new Array(n);
+    var maxV = -Infinity;
+    for (var i = 0; i < n; i++) {
+      var v = logits[i] * invT;
+      scaled[i] = v;
+      if (v > maxV) maxV = v;
+    }
+    var exps = new Array(n);
+    var sum = 0;
+    for (var j = 0; j < n; j++) {
+      var e = Math.exp(scaled[j] - maxV);
+      exps[j] = e;
+      sum += e;
+    }
+    var probs = new Array(n);
+    for (var k = 0; k < n; k++) probs[k] = exps[k] / sum;
+    var z = maxV + Math.log(sum);
+    return { probs: probs, z: z };
+  }
+
+  /* =====================================================================
+     1. TOP-K ROUTING, CAPACITY FACTOR & DROPPED TOKENS
+     ===================================================================== */
+  function routeBatch(opts) {
+    opts = opts || {};
+    var nTokens = Math.max(1, Math.round(opts.nTokens || 32));
+    var nExperts = Math.max(2, Math.round(opts.nExperts || 8));
+    var topK = Math.min(nExperts, Math.max(1, Math.round(opts.topK || 2)));
+    var temp = Math.max(0.05, opts.temp != null ? opts.temp : 1.0);
+    var capacityFactor = Math.max(0.1, opts.capacityFactor != null ? opts.capacityFactor : 1.25);
+    var skew = opts.skew != null ? opts.skew : 0.0;
+    var seed = opts.seed != null ? opts.seed : 1;
+    var dropless = Boolean(opts.dropless);
+    var biases = opts.biases && opts.biases.length === nExperts ? opts.biases : null;
+
+    var rng = mulberry32((seed * 2654435761) ^ (nExperts * 97) ^ (nTokens * 31));
+    var randn = makeNormal(rng);
+
+    // Build zero-mean skew profile favoring lower-index experts when skew > 0
+    var skewProfile = new Array(nExperts);
+    var decay = Math.max(1.0, nExperts * 0.25);
+    var meanExp = 0;
+    for (var i = 0; i < nExperts; i++) {
+      skewProfile[i] = Math.exp(-i / decay);
+      meanExp += skewProfile[i];
+    }
+    meanExp /= nExperts;
+    for (var i2 = 0; i2 < nExperts; i2++) {
+      skewProfile[i2] = skew * (skewProfile[i2] - meanExp);
+    }
+
+    var capacity = Math.max(1, Math.ceil(capacityFactor * nTokens * topK / nExperts));
+    var demand = new Array(nExperts).fill(0);
+    var assigned = new Array(nExperts).fill(0);
+    var dropped = new Array(nExperts).fill(0);
+    var probSum = new Array(nExperts).fill(0);
+    var expertSlots = new Array(nExperts);
+    for (var e = 0; e < nExperts; e++) expertSlots[e] = [];
+
+    var tokens = new Array(nTokens);
+    var totalSlots = nTokens * topK;
+    var droppedSlots = 0;
+    var tokensWithDrop = 0;
+    var fullyDroppedTokens = 0;
+    var zSqSum = 0;
+
+    for (var t = 0; t < nTokens; t++) {
+      var rowLogits;
+      if (opts.logits && opts.logits[t]) {
+        rowLogits = opts.logits[t].slice(0, nExperts);
+      } else {
+        rowLogits = new Array(nExperts);
+        for (var j = 0; j < nExperts; j++) {
+          rowLogits[j] = randn() * 0.85 + skewProfile[j];
+        }
+      }
+
+      var sm = softmaxWithZ(rowLogits, temp);
+      var probs = sm.probs;
+      zSqSum += sm.z * sm.z;
+      for (var p = 0; p < nExperts; p++) probSum[p] += probs[p];
+
+      // DeepSeek-V3 aux-loss-free trick: additive bias b_i shifts the selection
+      // score h'(x)_i = h(x)_i/T + b_i for top-k routing ONLY, NEVER changing
+      // the unbiased softmax probabilities p_i or final gating weights.
+      var selScores = new Array(nExperts);
+      var order = new Array(nExperts);
+      for (var s = 0; s < nExperts; s++) {
+        selScores[s] = (rowLogits[s] / temp) + (biases ? biases[s] : 0);
+        order[s] = s;
+      }
+      // Deterministic round-robin tie-breaker when scores are identical
+      order.sort(function (a, b) {
+        var diff = selScores[b] - selScores[a];
+        if (Math.abs(diff) > 1e-12) return diff;
+        var ra = (((a - t) % nExperts) + nExperts) % nExperts;
+        var rb = (((b - t) % nExperts) + nExperts) % nExperts;
+        return ra - rb;
+      });
+
+      var selected = order.slice(0, topK);
+      // Gating weights use ONLY the original unbiased probabilities p_i
+      var gateSum = 0;
+      for (var r = 0; r < topK; r++) gateSum += probs[selected[r]];
+      var gates = new Array(topK);
+      for (var r2 = 0; r2 < topK; r2++) {
+        gates[r2] = gateSum > 0 ? probs[selected[r2]] / gateSum : 1 / topK;
+      }
+
+      var assignments = new Array(topK);
+      var tokDropped = 0;
+      for (var r3 = 0; r3 < topK; r3++) {
+        var expIdx = selected[r3];
+        var slotIdx = demand[expIdx];
+        demand[expIdx] += 1;
+        var isDropped = !dropless && assigned[expIdx] >= capacity;
+        if (isDropped) {
+          dropped[expIdx] += 1;
+          droppedSlots += 1;
+          tokDropped += 1;
+        } else {
+          assigned[expIdx] += 1;
+        }
+        var rec = {
+          token: t,
+          rank: r3,
+          expert: expIdx,
+          prob: probs[expIdx],
+          selScore: selScores[expIdx],
+          gate: gates[r3],
+          dropped: isDropped,
+          slot: slotIdx
+        };
+        assignments[r3] = rec;
+        expertSlots[expIdx].push(rec);
+      }
+
+      if (tokDropped > 0) tokensWithDrop += 1;
+      if (tokDropped === topK) fullyDroppedTokens += 1;
+
+      tokens[t] = {
+        id: t,
+        logits: rowLogits,
+        probs: probs,
+        selScores: selScores,
+        selected: selected,
+        gates: gates,
+        assignments: assignments,
+        droppedCount: tokDropped,
+        z: sm.z
+      };
+    }
+
+    // Switch load-balancing loss: L_aux = N * sum_i (f_i * P_i)
+    // f_i = fraction of routed token-expert assignments going to expert i (sums to 1)
+    // P_i = mean router probability assigned to expert i (sums to 1)
+    // Perfect uniform balance (f_i = P_i = 1/N) yields L_aux = 1.0 for every topK.
+    var f = new Array(nExperts);
+    var P = new Array(nExperts);
+    var lAux = 0;
+    var maxDemand = 0;
+    var minDemand = Infinity;
+    for (var m = 0; m < nExperts; m++) {
+      f[m] = demand[m] / totalSlots;
+      P[m] = probSum[m] / nTokens;
+      lAux += f[m] * P[m];
+      if (demand[m] > maxDemand) maxDemand = demand[m];
+      if (demand[m] < minDemand) minDemand = demand[m];
+    }
+    lAux *= nExperts;
+
+    var meanDemand = totalSlots / nExperts;
+    var imbalanceRatio = meanDemand > 0 ? maxDemand / meanDemand : 1.0;
+    var assignedSlots = totalSlots - droppedSlots;
+    var paddedSlots = dropless ? assignedSlots : nExperts * capacity;
+    var paddingWaste = paddedSlots > 0 ? Math.max(0, paddedSlots - assignedSlots) / paddedSlots : 0;
+
+    return {
+      nTokens: nTokens,
+      nExperts: nExperts,
+      topK: topK,
+      temp: temp,
+      capacityFactor: capacityFactor,
+      dropless: dropless,
+      capacity: capacity,
+      totalSlots: totalSlots,
+      assignedSlots: assignedSlots,
+      droppedSlots: droppedSlots,
+      dropRate: totalSlots > 0 ? droppedSlots / totalSlots : 0,
+      tokensWithDrop: tokensWithDrop,
+      fullyDroppedTokens: fullyDroppedTokens,
+      paddedSlots: paddedSlots,
+      paddingWaste: paddingWaste,
+      demand: demand,
+      assigned: assigned,
+      dropped: dropped,
+      f: f,
+      P: P,
+      lAux: lAux,
+      zLoss: zSqSum / nTokens,
+      meanDemand: meanDemand,
+      maxDemand: maxDemand,
+      minDemand: minDemand,
+      imbalanceRatio: imbalanceRatio,
+      expertSlots: expertSlots,
+      tokens: tokens
+    };
+  }
+
+  /* =====================================================================
+     2. ROUTER COLLAPSE & LOAD BALANCING DYNAMICS
+     Modes:
+       'none' : no load balancing -> rich-get-richer router collapse
+       'aux'  : Switch auxiliary load-balancing loss (alphaAux * L_aux)
+       'bias' : DeepSeek-V3 aux-loss-free dynamic bias (b_i += gamma * sign(1/N - f_i))
+     ===================================================================== */
+  function simTrainingBalance(opts) {
+    opts = opts || {};
+    var nExperts = Math.max(2, Math.round(opts.nExperts || 8));
+    var topK = Math.min(nExperts, Math.max(1, Math.round(opts.topK || 2)));
+    var mode = opts.mode || 'none';
+    var steps = Math.max(10, Math.round(opts.steps || 80));
+    var alphaAux = opts.alphaAux != null ? Math.max(0, opts.alphaAux) : 0.08;
+    var biasGamma = opts.biasGamma != null ? Math.max(0, opts.biasGamma) : 0.06;
+    var seed = opts.seed != null ? opts.seed : 42;
+
+    var batchTokens = Math.max(64, nExperts * 16);
+    var targetShare = 1 / nExperts;
+    var rng = mulberry32((seed * 1597334677) ^ (nExperts * 131) ^ (topK * 17));
+    var randn = makeNormal(rng);
+
+    // Router global logits w_i, expert competence q_i, and DeepSeek dynamic bias b_i
+    var w = new Array(nExperts);
+    var q = new Array(nExperts);
+    var b = new Array(nExperts);
+    for (var i = 0; i < nExperts; i++) {
+      // Realistic random init with mild early-winner symmetry breaking
+      w[i] = randn() * 0.16 + (i < topK ? 0.28 : 0);
+      q[i] = 0.22 + (i < topK ? 0.08 : 0);
+      b[i] = 0;
+    }
+
+    // Semantic specialization scale: how strongly router prefers the token's
+    // matching specialist expert. Auxiliary loss directly fights this sharpness.
+    var semWeight = 1.0;
+    var lrW = 0.36;
+    var lrSem = 0.14;
+    var history = new Array(steps);
+
+    for (var step = 0; step < steps; step++) {
+      var counts = new Array(nExperts).fill(0);
+      var pSum = new Array(nExperts).fill(0);
+      var dLAux_dw = new Array(nExperts).fill(0);
+      var dLAux_dSem = 0;
+      var matchedSpecialist = 0;
+      var gateQualitySum = 0;
+
+      var batchProbs = new Array(batchTokens);
+      var batchCluster = new Array(batchTokens);
+
+      for (var t = 0; t < batchTokens; t++) {
+        var cluster = Math.floor(rng() * nExperts);
+        batchCluster[t] = cluster;
+        var logits = new Array(nExperts);
+        for (var e = 0; e < nExperts; e++) {
+          var affinity = e === cluster ? 1.0 : ((e + 1) % nExperts === cluster ? 0.30 : 0.0);
+          logits[e] = w[e] + semWeight * affinity + randn() * 0.28;
+        }
+        var probs = softmaxWithZ(logits, 1.0).probs;
+        batchProbs[t] = probs;
+        for (var p = 0; p < nExperts; p++) pSum[p] += probs[p];
+
+        // Top-k selection: DeepSeek-V3 adds b_i to routing logits h'(x)_i = h(x)_i + b_i
+        // while keeping original unbiased probs for gating weights.
+        var order = new Array(nExperts);
+        for (var s = 0; s < nExperts; s++) order[s] = s;
+        order.sort(function (x, y) {
+          var sx = logits[x] + (mode === 'bias' ? b[x] : 0);
+          var sy = logits[y] + (mode === 'bias' ? b[y] : 0);
+          return sy - sx;
+        });
+        var sel = order.slice(0, topK);
+
+        var gSum = 0;
+        var tokScore = 0;
+        var hitSpec = false;
+        for (var r = 0; r < topK; r++) {
+          var idx = sel[r];
+          counts[idx] += 1;
+          gSum += probs[idx];
+          if (idx === cluster) hitSpec = true;
+        }
+        if (hitSpec) matchedSpecialist += 1;
+        for (var r2 = 0; r2 < topK; r2++) {
+          var idx2 = sel[r2];
+          var g = gSum > 0 ? probs[idx2] / gSum : 1 / topK;
+          var matchBonus = idx2 === cluster ? 1.0 : ((idx2 + 1) % nExperts === cluster ? 0.45 : 0.15);
+          tokScore += g * (0.45 * q[idx2] + 0.55 * matchBonus);
+        }
+        gateQualitySum += tokScore;
+      }
+
+      var totalSlots = batchTokens * topK;
+      var f = new Array(nExperts);
+      var P = new Array(nExperts);
+      var lAux = 0;
+      var maxF = 0;
+      var deadCount = 0;
+      var entropy = 0;
+
+      for (var k = 0; k < nExperts; k++) {
+        f[k] = counts[k] / totalSlots;
+        P[k] = pSum[k] / batchTokens;
+        lAux += f[k] * P[k];
+        if (f[k] > maxF) maxF = f[k];
+        if (f[k] < 0.2 * targetShare) deadCount += 1;
+        if (f[k] > 1e-12) entropy -= f[k] * Math.log(f[k]);
+      }
+      lAux *= nExperts;
+      var normEntropy = entropy / Math.log(nExperts);
+      var imbalance = maxF / targetShare;
+
+      // Exact gradient of L_aux = N * sum_j f_j P_j wrt w_i and semWeight
+      for (var t2 = 0; t2 < batchTokens; t2++) {
+        var pr = batchProbs[t2];
+        var cl = batchCluster[t2];
+        var dotFP = 0;
+        for (var j = 0; j < nExperts; j++) dotFP += f[j] * pr[j];
+        var meanAff = pr[cl] + 0.30 * pr[(cl - 1 + nExperts) % nExperts];
+        for (var j2 = 0; j2 < nExperts; j2++) {
+          var gW = (nExperts / batchTokens) * pr[j2] * (f[j2] - dotFP);
+          dLAux_dw[j2] += gW;
+          var aff = j2 === cl ? 1.0 : ((j2 + 1) % nExperts === cl ? 0.30 : 0.0);
+          dLAux_dSem += (nExperts / batchTokens) * f[j2] * pr[j2] * (aff - meanAff);
+        }
+      }
+
+      // Rich-get-richer LM feedback: experts receiving more tokens train faster,
+      // increasing competence q_i, which reinforces the LM router preference.
+      var meanQ = 0;
+      for (var iq = 0; iq < nExperts; iq++) {
+        q[iq] += 0.14 * (1 - q[iq]) * Math.min(1, f[iq] * nExperts * 0.65);
+        meanQ += q[iq];
+      }
+      meanQ /= nExperts;
+
+      // Scale factor so dynamics remain consistent across N = 4, 8, 16
+      var nScale = nExperts / 8;
+      var lmNormSq = 0;
+      var auxNormSq = 0;
+      var gradLM = new Array(nExperts);
+      var gradAuxVec = new Array(nExperts);
+      for (var iw = 0; iw < nExperts; iw++) {
+        var gLM = -(0.85 * (q[iw] - meanQ) + 0.38 * nScale * (f[iw] - targetShare)) + 0.02 * w[iw];
+        gradLM[iw] = gLM;
+        lmNormSq += gLM * gLM;
+        // Scale aux gradient by N so alphaAux has invariant meaning across N=4,8,16
+        var gAux = alphaAux * 46.0 * nScale * dLAux_dw[iw];
+        gradAuxVec[iw] = gAux;
+        if (mode === 'aux') auxNormSq += gAux * gAux;
+      }
+
+      var gradInterference = 0;
+      if (mode === 'aux' && alphaAux > 0) {
+        var ratio = Math.sqrt(auxNormSq) / (Math.sqrt(lmNormSq) + 0.12);
+        var semPush = Math.abs(alphaAux * 6.0 * dLAux_dSem) + alphaAux * 2.1;
+        gradInterference = Math.min(1.0, ratio * 0.32 + semPush * 0.48);
+      }
+
+      // Apply gradient updates to router weights w_i
+      for (var iu = 0; iu < nExperts; iu++) {
+        if (mode === 'aux') {
+          w[iu] -= lrW * (gradLM[iu] + gradAuxVec[iu]);
+        } else {
+          // Both 'none' and 'bias' apply ONLY the clean LM gradient to w_i!
+          w[iu] -= lrW * gradLM[iu];
+        }
+        w[iu] = Math.max(-4.0, Math.min(4.0, w[iu]));
+      }
+
+      // Zero-center w so shift-invariance does not drift logits
+      var meanW = 0;
+      for (var mc = 0; mc < nExperts; mc++) meanW += w[mc];
+      meanW /= nExperts;
+      for (var mc2 = 0; mc2 < nExperts; mc2++) w[mc2] -= meanW;
+
+      // Update semantic sharpness: LM wants strong specialization (~1.75);
+      // Switch aux loss fights it proportionally to alphaAux (gradient interference).
+      var targetSem = mode === 'aux' ? Math.max(0.25, 1.75 - alphaAux * 5.2) : 1.75;
+      if (mode === 'none') {
+        targetSem = 1.75 * (0.40 + 0.60 * normEntropy);
+      }
+      semWeight += lrSem * (targetSem - semWeight);
+
+      // DeepSeek-V3 auxiliary-loss-free dynamic bias update:
+      // b_i <- b_i + gamma * sign(target - load_i), zero-centered
+      if (mode === 'bias' && biasGamma > 0) {
+        var meanB = 0;
+        for (var ib = 0; ib < nExperts; ib++) {
+          var err = targetShare - f[ib];
+          var sgn = Math.abs(err) < 0.004 ? 0 : (err > 0 ? 1 : -1);
+          b[ib] += biasGamma * sgn;
+          b[ib] = Math.max(-3.0, Math.min(3.0, b[ib]));
+          meanB += b[ib];
+        }
+        meanB /= nExperts;
+        for (var ib2 = 0; ib2 < nExperts; ib2++) b[ib2] -= meanB;
+      }
+
+      // Proxy LM loss (lower is better): rewards active specialist capacity & clean gating
+      var meanGateQ = gateQualitySum / batchTokens;
+      var auxPenalty = mode === 'aux' ? 0.24 * gradInterference : 0;
+      var lmLossProxy = 2.65 - 1.18 * meanGateQ + 0.30 * (1 - normEntropy) + auxPenalty;
+
+      history[step] = {
+        step: step + 1,
+        shares: f,
+        probs: P,
+        biases: b.slice(),
+        lAux: lAux,
+        imbalance: imbalance,
+        deadExperts: deadCount,
+        normEntropy: normEntropy,
+        specialistHitRate: matchedSpecialist / batchTokens,
+        gradInterference: gradInterference,
+        lmLossProxy: lmLossProxy
+      };
+    }
+
+    var last = history[steps - 1];
+    return {
+      mode: mode,
+      nExperts: nExperts,
+      topK: topK,
+      steps: steps,
+      alphaAux: alphaAux,
+      biasGamma: biasGamma,
+      history: history,
+      final: last
+    };
+  }
+
+  /* =====================================================================
+     3. ACTIVE VS TOTAL PARAMS SERVING ROOFLINE (PUBLISHED SPECS + FORMULA)
+     ===================================================================== */
+  var MODELS = {
+    'mixtral-8x7b': {
+      key: 'mixtral-8x7b',
+      name: 'Mixtral-8x7B',
+      family: 'MoE (coarse)',
+      isMoE: true,
+      totalParamsB: 46.7,
+      activeParamsB: 12.9,
+      nExperts: 8,
+      topK: 2,
+      sharedExperts: 0,
+      layers: 32,
+      kvBytesPerTokFP16: 131072, // 2 * 32 * 8 * 128 * 2 B = 128 KiB
+      note: '8 experts, top-2; classic coarse sparse MoE'
+    },
+    'qwen3-30b-a3b': {
+      key: 'qwen3-30b-a3b',
+      name: 'Qwen3-30B-A3B',
+      family: 'MoE (fine-grained)',
+      isMoE: true,
+      totalParamsB: 30.5,
+      activeParamsB: 3.3,
+      nExperts: 128,
+      topK: 8,
+      sharedExperts: 0,
+      layers: 48,
+      kvBytesPerTokFP16: 98304, // 2 * 48 * 4 * 128 * 2 B = 96 KiB
+      note: '128 fine-grained experts, top-8 (9.2x total/active ratio)'
+    },
+    'deepseek-v3': {
+      key: 'deepseek-v3',
+      name: 'DeepSeek-V3',
+      family: 'MoE (fine-grained + shared)',
+      isMoE: true,
+      totalParamsB: 671.0,
+      activeParamsB: 37.0,
+      nExperts: 256,
+      topK: 8,
+      sharedExperts: 1,
+      layers: 61,
+      kvBytesPerTokFP16: 70272, // MLA compressed latent: 61 * (512 + 64) * 2 B ≈ 68.6 KiB
+      note: '256 routed experts (top-8) + 1 shared expert, aux-loss-free bias + MLA'
+    },
+    'llama-3.1-8b': {
+      key: 'llama-3.1-8b',
+      name: 'Llama-3.1-8B',
+      family: 'Dense',
+      isMoE: false,
+      totalParamsB: 8.0,
+      activeParamsB: 8.0,
+      nExperts: 1,
+      topK: 1,
+      sharedExperts: 0,
+      layers: 32,
+      kvBytesPerTokFP16: 131072, // 2 * 32 * 8 * 128 * 2 B = 128 KiB
+      note: 'Dense 8B baseline (100% params active every token)'
+    },
+    'llama-3.1-70b': {
+      key: 'llama-3.1-70b',
+      name: 'Llama-3.1-70B',
+      family: 'Dense',
+      isMoE: false,
+      totalParamsB: 70.6,
+      activeParamsB: 70.6,
+      nExperts: 1,
+      topK: 1,
+      sharedExperts: 0,
+      layers: 80,
+      kvBytesPerTokFP16: 327680, // 2 * 80 * 8 * 128 * 2 B = 320 KiB
+      note: 'Dense 70.6B baseline (100% params active every token)'
+    }
+  };
+
+  var GPUS = {
+    'a100-80': {
+      key: 'a100-80',
+      name: '1x A100 80GB SXM',
+      vramGB: 80,
+      bwGBs: 2039,
+      tflopsBF16: 312
+    },
+    'h100-80': {
+      key: 'h100-80',
+      name: '1x H100 80GB SXM',
+      vramGB: 80,
+      bwGBs: 3350,
+      tflopsBF16: 989
+    },
+    'h100-8x': {
+      key: 'h100-8x',
+      name: '8x H100 80GB SXM',
+      vramGB: 640,
+      bwGBs: 26800,
+      tflopsBF16: 7912
+    },
+    'h200-8x': {
+      key: 'h200-8x',
+      name: '8x H200 141GB SXM',
+      vramGB: 1128,
+      bwGBs: 38400,
+      tflopsBF16: 7912
+    }
+  };
+
+  /* Coupon-collector expected distinct experts hit by a batch of B independent tokens:
+     E[distinct] = N * (1 - (1 - k/N)^B)
+     At B = 1: equals k. As B -> inf: approaches N. */
+  function expectedDistinctExperts(nExperts, topK, batchSize) {
+    var N = Math.max(1, nExperts);
+    var k = Math.min(N, Math.max(1, topK));
+    var B = Math.max(1, batchSize);
+    if (k >= N) return N;
+    return N * (1 - Math.pow(1 - k / N, B));
+  }
+
+  function moeRoofline(opts) {
+    opts = opts || {};
+    var model = MODELS[opts.modelKey || 'qwen3-30b-a3b'] || MODELS['qwen3-30b-a3b'];
+    var gpu = GPUS[opts.gpuKey || 'h100-80'] || GPUS['h100-80'];
+    var weightBytes = opts.weightBytes != null ? Math.max(0.25, opts.weightBytes) : 2;
+    var batchSize = Math.max(1, Math.round(opts.batchSize || 1));
+    var ctx = Math.max(1, Math.round(opts.ctx || 2048));
+
+    var expExperts = expectedDistinctExperts(model.nExperts, model.topK, batchSize);
+    var expertFrac = expExperts / model.nExperts;
+
+    // Split model params into always-active (attention, embeddings, shared experts)
+    // and per-routed-expert weights so B=1 reads activeParamsB and B->inf reads totalParamsB.
+    var perExpertB = model.nExperts > model.topK
+      ? (model.totalParamsB - model.activeParamsB) / (model.nExperts - model.topK)
+      : 0;
+    var alwaysActiveB = model.activeParamsB - model.topK * perExpertB;
+    var stepParamsReadB = alwaysActiveB + expExperts * perExpertB;
+
+    var weightBytesStep = stepParamsReadB * 1e9 * weightBytes;
+    var kvBytesStep = batchSize * ctx * model.kvBytesPerTokFP16; // FP16 KV cache
+    var totalBytesStep = weightBytesStep + kvBytesStep;
+
+    var weightBytesPerTok = weightBytesStep / batchSize;
+    var kvBytesPerTok = kvBytesStep / batchSize;
+    var totalBytesPerTok = totalBytesStep / batchSize;
+
+    // VRAM must ALWAYS hold ALL total parameters + batch KV cache
+    var weightVramGB = (model.totalParamsB * 1e9 * weightBytes) / 1e9;
+    var kvVramGB = kvBytesStep / 1e9;
+    var totalVramGB = weightVramGB + kvVramGB;
+    var fitsVram = totalVramGB <= gpu.vramGB;
+
+    // Roofline decode latency ceiling (idealized: ignores all-to-all EP comm overhead)
+    var flopsStep = 2 * model.activeParamsB * 1e9 * batchSize;
+    var tMemMs = (totalBytesStep / (gpu.bwGBs * 1e9)) * 1000;
+    var tCompMs = (flopsStep / (gpu.tflopsBF16 * 1e12)) * 1000;
+    var tStepMs = Math.max(tMemMs, tCompMs);
+    var tokPerSecPerUser = 1000 / tStepMs;
+    var totalTokPerSec = batchSize * tokPerSecPerUser;
+    var regime = tMemMs >= tCompMs ? 'memory-bound' : 'compute-bound';
+
+    var batchTo90Pct = model.nExperts > model.topK
+      ? Math.ceil(Math.log(0.1) / Math.log(1 - model.topK / model.nExperts))
+      : 1;
+
+    return {
+      model: model,
+      gpu: gpu,
+      weightBytes: weightBytes,
+      batchSize: batchSize,
+      ctx: ctx,
+      expectedDistinctExperts: expExperts,
+      expertHitFraction: expertFrac,
+      stepParamsReadB: stepParamsReadB,
+      weightReadFraction: stepParamsReadB / model.totalParamsB,
+      weightBytesStepGB: weightBytesStep / 1e9,
+      kvBytesStepGB: kvBytesStep / 1e9,
+      totalBytesStepGB: totalBytesStep / 1e9,
+      weightBytesPerTokGB: weightBytesPerTok / 1e9,
+      kvBytesPerTokGB: kvBytesPerTok / 1e9,
+      totalBytesPerTokGB: totalBytesPerTok / 1e9,
+      weightVramGB: weightVramGB,
+      kvVramGB: kvVramGB,
+      totalVramGB: totalVramGB,
+      vramUtilPct: (totalVramGB / gpu.vramGB) * 100,
+      fitsVram: fitsVram,
+      tMemMs: tMemMs,
+      tCompMs: tCompMs,
+      tStepMs: tStepMs,
+      tokPerSecPerUser: tokPerSecPerUser,
+      totalTokPerSec: totalTokPerSec,
+      regime: regime,
+      batchTo90Pct: batchTo90Pct
+    };
+  }
+
+  function moeRooflineCurve(opts) {
+    opts = opts || {};
+    var batches = opts.batches || [1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256];
+    return batches.map(function (B) {
+      return moeRoofline({
+        modelKey: opts.modelKey,
+        gpuKey: opts.gpuKey,
+        weightBytes: opts.weightBytes,
+        batchSize: B,
+        ctx: opts.ctx
+      });
+    });
+  }
+
+  var api = {
+    mulberry32: mulberry32,
+    softmaxWithZ: softmaxWithZ,
+    routeBatch: routeBatch,
+    simTrainingBalance: simTrainingBalance,
+    expectedDistinctExperts: expectedDistinctExperts,
+    moeRoofline: moeRoofline,
+    moeRooflineCurve: moeRooflineCurve,
+    MODELS: MODELS,
+    GPUS: GPUS
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.MOESIM = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+(function () {
+  'use strict';
+  const S = window.MOESIM;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  if (window.mlViz) window.mlViz.initTheme('themeBtn');
+
+  function seg(id, items, cur, onChange, labelFn) {
+    const el = $(id);
+    function render(val) {
+      el.innerHTML = items.map((v) => {
+        const lbl = labelFn ? labelFn(v) : String(v);
+        const on = String(v) === String(val);
+        return `<button type="button" data-v="${esc(v)}" aria-pressed="${on}">${esc(lbl)}</button>`;
+      }).join('');
+      el.querySelectorAll('button').forEach((b) => {
+        b.onclick = () => {
+          const raw = b.dataset.v;
+          const match = items.find((x) => String(x) === raw);
+          render(match);
+          onChange(match);
+        };
+      });
+    }
+    render(cur);
+    return { set: render };
+  }
+
+  function kpi(cls, v, l) {
+    return `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  }
+
+  /* =========================================================
+     TAB 1: TOP-K ROUTING & CAPACITY BUFFERS
+     ========================================================= */
+  const P1 = { nTokens: 32, nExperts: 8, topK: 2, capacityFactor: 1.25, skew: 0.7, temp: 1.0, seed: 3, dropless: false };
+  let res1 = null;
+
+  const sN1 = seg('sN1', [4, 8, 16], P1.nExperts, (v) => {
+    P1.nExperts = +v;
+    if (P1.topK > P1.nExperts) { P1.topK = P1.nExperts; sK1.set(P1.topK); }
+    drawTab1();
+  });
+  const sK1 = seg('sK1', [1, 2, 4], P1.topK, (v) => {
+    P1.topK = Math.min(P1.nExperts, +v);
+    sK1.set(P1.topK);
+    drawTab1();
+  }, (v) => `top-${v}`);
+  const sDrop1 = seg('sDrop1', ['fixed', 'dropless'], 'fixed', (v) => {
+    P1.dropless = v === 'dropless';
+    $('rCap').disabled = P1.dropless;
+    drawTab1();
+  }, (v) => (v === 'fixed' ? 'Fixed capacity C' : 'Dropless MoE'));
+
+  $('rCap').oninput = (e) => { P1.capacityFactor = +e.target.value; $('vCap').textContent = P1.capacityFactor.toFixed(2); drawTab1(); };
+  $('rSkew').oninput = (e) => { P1.skew = +e.target.value; $('vSkew').textContent = P1.skew.toFixed(2); drawTab1(); };
+  $('rTemp').oninput = (e) => { P1.temp = +e.target.value; $('vTemp').textContent = P1.temp.toFixed(2); drawTab1(); };
+
+  $('bBatch').onclick = () => { P1.seed += 1; drawTab1(); };
+  $('bBal1').onclick = () => {
+    P1.skew = 0.0; P1.temp = 1.0; P1.capacityFactor = 1.25; P1.dropless = false;
+    $('rSkew').value = '0'; $('vSkew').textContent = '0.00';
+    $('rTemp').value = '1'; $('vTemp').textContent = '1.00';
+    $('rCap').value = '1.25'; $('vCap').textContent = '1.25'; $('rCap').disabled = false;
+    sDrop1.set('fixed');
+    drawTab1();
+  };
+  $('bOverflow').onclick = () => {
+    P1.skew = 1.8; P1.temp = 0.65; P1.capacityFactor = 0.90; P1.dropless = false;
+    $('rSkew').value = '1.8'; $('vSkew').textContent = '1.80';
+    $('rTemp').value = '0.65'; $('vTemp').textContent = '0.65';
+    $('rCap').value = '0.9'; $('vCap').textContent = '0.90'; $('rCap').disabled = false;
+    sDrop1.set('fixed');
+    drawTab1();
+  };
+
+  function drawTab1() {
+    res1 = S.routeBatch(P1);
+    $('lblSlots1').textContent = String(res1.topK);
+    $('lblTot1').textContent = String(res1.totalSlots);
+    $('batchSeedLbl').textContent = `Batch seed #${P1.seed}`;
+
+    // ---- Chart 1a: Expert capacity buffer bars ----
+    const W = 760, H = 285, m = { l: 48, r: 24, t: 26, b: 56 };
+    const plotW = W - m.l - m.r, plotH = H - m.t - m.b;
+    const maxStack = Math.max(res1.maxDemand, res1.dropless ? res1.maxDemand : res1.capacity, Math.ceil(res1.meanDemand * 1.3), 4);
+    const yMax = maxStack + 1;
+    const colStep = plotW / res1.nExperts;
+    const barW = Math.min(58, Math.max(20, colStep * 0.72));
+    const sy = (v) => m.t + plotH - (v / yMax) * plotH;
+    const slotH = Math.max(3, (plotH / yMax) - 2);
+
+    let svg = `<defs><pattern id="padHatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--hatch)" stroke-width="2"/></pattern></defs>`;
+
+    // Y gridlines
+    const yTickStep = yMax <= 10 ? 2 : yMax <= 24 ? 4 : 8;
+    for (let yv = 0; yv <= yMax; yv += yTickStep) {
+      const yy = sy(yv);
+      svg += `<line class="grid-l" x1="${m.l}" x2="${W - m.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}"/>`;
+      svg += `<text x="${m.l - 7}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end">${yv}</text>`;
+    }
+    svg += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${sy(0)}" y2="${sy(0)}"/>`;
+    svg += `<text x="6" y="13">tokens / expert</text>`;
+
+    // Mean ideal load line
+    const yMean = sy(res1.meanDemand);
+    svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${yMean.toFixed(1)}" y2="${yMean.toFixed(1)}" stroke="var(--muted)" stroke-dasharray="2 3" stroke-width="1.2"/>`;
+    svg += `<text x="${W - m.r}" y="${(yMean - 4).toFixed(1)}" text-anchor="end" style="font-size:10px">ideal mean ${res1.meanDemand.toFixed(1)}</text>`;
+
+    // Draw each expert column
+    for (let e = 0; e < res1.nExperts; e++) {
+      const cx = m.l + (e + 0.5) * colStep;
+      const x0 = cx - barW / 2;
+      const slots = res1.expertSlots[e];
+
+      // Empty padded slots when fixed capacity > assigned
+      if (!res1.dropless && res1.assigned[e] < res1.capacity) {
+        const padTop = sy(res1.capacity);
+        const padBot = sy(res1.assigned[e]);
+        const padCount = res1.capacity - res1.assigned[e];
+        svg += `<rect x="${x0.toFixed(1)}" y="${padTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, padBot - padTop).toFixed(1)}" rx="3" fill="url(#padHatch)" stroke="var(--line)" stroke-dasharray="3 2" class="interactive"><title>Expert E${e}: ${padCount} unused padding slot${padCount === 1 ? '' : 's'} (wasted fixed-buffer compute)</title></rect>`;
+      }
+
+      // Draw individual routed token slots
+      for (let s = 0; s < slots.length; s++) {
+        const rec = slots[s];
+        const yTop = sy(s + 1) + 1;
+        const fill = rec.dropped ? 'var(--bad)' : (rec.rank === 0 ? 'var(--c-c)' : 'var(--c-b)');
+        const stroke = rec.dropped ? 'var(--ink)' : 'none';
+        const tip = `Token t${rec.token} -> Expert E${e} (rank #${rec.rank + 1})\nSoftmax p = ${rec.prob.toFixed(3)} | Gate weight g = ${rec.gate.toFixed(3)}\nStatus: ${rec.dropped ? 'DROPPED (slot ' + (s + 1) + ' > cap ' + res1.capacity + ')' : 'Assigned (slot ' + (s + 1) + (res1.dropless ? ', dropless' : ' / ' + res1.capacity) + ')'}`;
+        svg += `<rect x="${x0.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${slotH.toFixed(1)}" rx="2.5" fill="${fill}" ${rec.dropped ? 'fill-opacity=".9" stroke="var(--bg)" stroke-width="1"' : ''} class="interactive"><title>${esc(tip)}</title></rect>`;
+        if (slotH >= 11 && barW >= 28) {
+          svg += `<text x="${cx.toFixed(1)}" y="${(yTop + slotH * 0.72).toFixed(1)}" text-anchor="middle" class="slot-lbl" fill="var(--accent-ink)">t${rec.token}</text>`;
+        }
+      }
+
+      // Expert labels + f_i / P_i
+      const over = res1.dropped[e] > 0;
+      svg += `<text x="${cx.toFixed(1)}" y="${H - m.b + 16}" text-anchor="middle" class="lbl-strong" ${over ? 'style="fill:var(--bad)"' : ''}>E${e}</text>`;
+      svg += `<text x="${cx.toFixed(1)}" y="${H - m.b + 30}" text-anchor="middle" class="num">${res1.demand[e]}${over ? ' (-' + res1.dropped[e] + ')' : ''}</text>`;
+      if (res1.nExperts <= 8) {
+        svg += `<text x="${cx.toFixed(1)}" y="${H - m.b + 44}" text-anchor="middle" class="num">f=${(res1.f[e] * 100).toFixed(0)}% P=${(res1.P[e] * 100).toFixed(0)}%</text>`;
+      } else {
+        svg += `<text x="${cx.toFixed(1)}" y="${H - m.b + 44}" text-anchor="middle" class="num">${(res1.f[e] * 100).toFixed(0)}%</text>`;
+      }
+    }
+
+    // Capacity dashed line (if fixed buffer mode)
+    if (!res1.dropless) {
+      const yCap = sy(res1.capacity);
+      svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${yCap.toFixed(1)}" y2="${yCap.toFixed(1)}" stroke="var(--warn)" stroke-width="2.2" stroke-dasharray="6 4"/>`;
+      svg += `<text x="${m.l + 6}" y="${Math.max(m.t + 10, yCap - 6).toFixed(1)}" style="fill:var(--warn);font-weight:700;font-size:11px">capacity = ${res1.capacity} slots (C = ${res1.capacityFactor.toFixed(2)})</text>`;
+    } else {
+      svg += `<text x="${m.l + 6}" y="${m.t + 10}" style="fill:var(--good);font-weight:700;font-size:11px">Dropless MoE: variable-sized expert blocks (no fixed capacity cutoff)</text>`;
+    }
+    $('c1a').innerHTML = svg;
+
+    // ---- Chart 1b: Token-to-Expert Routing Matrix ----
+    const hmH = Math.max(150, 52 + res1.nExperts * (res1.nExperts <= 8 ? 20 : 14));
+    $('c1b').setAttribute('viewBox', `0 0 760 ${hmH}`);
+    const hm = { l: 42, r: 16, t: 22, b: 28 };
+    const cw = (W - hm.l - hm.r) / res1.nTokens;
+    const ch = (hmH - hm.t - hm.b) / res1.nExperts;
+    let hsvg = `<text x="${hm.l}" y="13">tokens t0 .. t${res1.nTokens - 1} (columns) &rarr; experts E0 .. E${res1.nExperts - 1} (rows)</text>`;
+    for (let e = 0; e < res1.nExperts; e++) {
+      const y = hm.t + e * ch;
+      hsvg += `<text x="${hm.l - 6}" y="${(y + ch * 0.72).toFixed(1)}" text-anchor="end" class="num">E${e}</text>`;
+    }
+    for (let t = 0; t < res1.nTokens; t++) {
+      const tok = res1.tokens[t];
+      const x = hm.l + t * cw;
+      if (t % 4 === 0 || t === res1.nTokens - 1) {
+        hsvg += `<text x="${(x + cw / 2).toFixed(1)}" y="${hmH - 8}" text-anchor="middle" class="num">t${t}</text>`;
+      }
+      const assignMap = {};
+      tok.assignments.forEach((a) => { assignMap[a.expert] = a; });
+      for (let e = 0; e < res1.nExperts; e++) {
+        const p = tok.probs[e];
+        const a = assignMap[e];
+        const y = hm.t + e * ch;
+        // Scale opacity clearly against 1/N baseline
+        const alpha = Math.min(0.92, Math.max(0.06, p * res1.nExperts * 0.28));
+        const fill = a && a.dropped ? 'var(--bad)' : (a ? 'var(--c-c)' : 'var(--c-c)');
+        const tip = `Token t${t} -> E${e}\nLogit h = ${tok.logits[e].toFixed(2)} | Softmax p = ${p.toFixed(3)}\n${a ? (a.dropped ? 'Selected rank #' + (a.rank + 1) + ' -> DROPPED (overflow)' : 'Selected rank #' + (a.rank + 1) + ' -> Assigned (gate=' + a.gate.toFixed(2) + ')') : 'Not in top-' + res1.topK}`;
+        hsvg += `<rect x="${(x + 1).toFixed(1)}" y="${(y + 1).toFixed(1)}" width="${Math.max(2, cw - 2).toFixed(1)}" height="${Math.max(2, ch - 2).toFixed(1)}" rx="2" fill="${fill}" fill-opacity="${(a && a.dropped ? 0.85 : alpha).toFixed(2)}" ${a ? `stroke="${a.dropped ? 'var(--bad)' : 'var(--ink)'}" stroke-width="${a.dropped ? '1.8' : '1.4'}"` : ''} class="interactive"><title>${esc(tip)}</title></rect>`;
+        if (a && a.dropped) {
+          hsvg += `<line x1="${(x + 3).toFixed(1)}" y1="${(y + 3).toFixed(1)}" x2="${(x + cw - 3).toFixed(1)}" y2="${(y + ch - 3).toFixed(1)}" stroke="var(--bg)" stroke-width="1.4" pointer-events="none"/>`;
+        }
+      }
+    }
+    $('c1b').innerHTML = hsvg;
+
+    // Formula line & KPIs
+    const lAuxCls = res1.lAux < 1.08 ? 'good' : res1.lAux < 1.35 ? 'warn' : 'bad';
+    const dropCls = res1.droppedSlots === 0 ? 'good' : res1.dropRate < 0.12 ? 'warn' : 'bad';
+    const imbCls = res1.imbalanceRatio <= 1.35 ? 'good' : res1.imbalanceRatio <= 1.9 ? 'warn' : 'bad';
+
+    $('step1').innerHTML = `<b>L<sub>aux</sub></b> = N &middot; &Sigma;(f<sub>i</sub> &middot; P<sub>i</sub>) = ${res1.nExperts} &times; ${(res1.lAux / res1.nExperts).toFixed(4)} = <b>${res1.lAux.toFixed(3)}</b> (perfect balance = 1.000) &nbsp;|&nbsp; <b>capacity</b> = ceil(${res1.capacityFactor.toFixed(2)} &times; ${res1.nTokens} &times; ${res1.topK} / ${res1.nExperts}) = <b>${res1.capacity}</b> &nbsp;|&nbsp; <b>Z-loss</b> = mean Z(x)&sup2; = <b>${res1.zLoss.toFixed(2)}</b>`;
+
+    $('k1').innerHTML =
+      kpi(lAuxCls, res1.lAux.toFixed(3), 'Switch L_aux (1.000 = uniform)') +
+      kpi(imbCls, `${res1.imbalanceRatio.toFixed(2)}&times;`, `max/mean load (${res1.maxDemand} vs ${res1.meanDemand.toFixed(1)})`) +
+      kpi(dropCls, `${(res1.dropRate * 100).toFixed(1)}%`, `dropped slots (${res1.droppedSlots}/${res1.totalSlots}; ${res1.tokensWithDrop} tokens hit)`) +
+      kpi('', `${(res1.paddingWaste * 100).toFixed(1)}%`, res1.dropless ? 'padding waste (dropless = 0%)' : `unused buffer padding (${res1.paddedSlots - res1.assignedSlots}/${res1.paddedSlots})`) +
+      kpi('', res1.zLoss.toFixed(2), 'router Z-loss (logit scale)');
+
+    // Dynamic callout
+    let note1 = '';
+    if (res1.dropless) {
+      note1 = `<b>Dropless MoE active.</b> Every expert runs a block-sparse GEMM sized to its actual routed tokens (min ${res1.minDemand}, max ${res1.maxDemand}), so <b>0 tokens are dropped</b> and <b>0% buffer padding</b> is wasted. The catch: an imbalanced batch (${res1.imbalanceRatio.toFixed(2)}&times; max/mean) still makes the busiest expert a straggler across GPUs, so load balancing (Tab 2) remains essential.`;
+    } else if (res1.droppedSlots > 0) {
+      note1 = `<b>Token overflow!</b> ${res1.droppedSlots} of ${res1.totalSlots} routed assignments (${(res1.dropRate * 100).toFixed(1)}%) exceeded the capacity limit of ${res1.capacity} tokens/expert${res1.fullyDroppedTokens > 0 ? `, leaving <b>${res1.fullyDroppedTokens} token${res1.fullyDroppedTokens === 1 ? '' : 's'}</b> with zero expert processing (residual-only fallback)` : ''}. Raising capacity factor <em>C</em> rescues dropped tokens at the cost of empty padding slots; switching to <b>Dropless MoE</b> eliminates both.`;
+    } else if (res1.paddingWaste > 0.30) {
+      note1 = `<b>Zero drops, high padding tax.</b> Capacity <em>C = ${res1.capacityFactor.toFixed(2)}</em> absorbs the peak expert (${res1.maxDemand} tokens), but <b>${(res1.paddingWaste * 100).toFixed(1)}%</b> of allocated buffer slots sit empty&mdash;wasting FLOPs and activation memory. Lowering <em>C</em> trims waste until the hottest expert overflows.`;
+    } else {
+      note1 = `<b>Balanced fixed-buffer sweet spot.</b> All ${res1.totalSlots} token-expert assignments fit inside capacity ${res1.capacity} with zero drops and moderate padding (${(res1.paddingWaste * 100).toFixed(1)}%). Try increasing <b>router skew</b> or lowering <b>capacity factor <em>C</em></b> to watch hot experts overflow.`;
+    }
+    $('n1').innerHTML = note1;
+  }
+
+  /* =========================================================
+     TAB 2: ROUTER COLLAPSE & LOAD BALANCING
+     ========================================================= */
+  const P2 = { mode: 'bias', nExperts: 8, topK: 2, steps: 80, alphaAux: 0.08, biasGamma: 0.06, seed: 42 };
+  let runs2 = null;
+
+  const sMode2 = seg('sMode2', ['none', 'aux', 'bias'], P2.mode, (v) => { P2.mode = v; drawTab2(); }, (v) => ({
+    none: 'No balancing (collapse)',
+    aux: 'Switch aux loss',
+    bias: 'DeepSeek bias'
+  }[v]));
+  seg('sN2', [4, 8, 16], P2.nExperts, (v) => { P2.nExperts = +v; drawTab2(); });
+
+  $('rAlpha').oninput = (e) => { P2.alphaAux = +e.target.value; $('vAlpha').textContent = P2.alphaAux.toFixed(2); drawTab2(); };
+  $('rGamma').oninput = (e) => { P2.biasGamma = +e.target.value; $('vGamma').textContent = P2.biasGamma.toFixed(3); drawTab2(); };
+  $('bSeed2').onclick = () => { P2.seed += 1; drawTab2(); };
+  $('bHighAlpha').onclick = () => {
+    P2.alphaAux = 0.22; P2.mode = 'aux';
+    $('rAlpha').value = '0.22'; $('vAlpha').textContent = '0.22';
+    sMode2.set('aux');
+    drawTab2();
+  };
+  $('bDef2').onclick = () => {
+    P2.alphaAux = 0.08; P2.biasGamma = 0.06; P2.seed = 42;
+    $('rAlpha').value = '0.08'; $('vAlpha').textContent = '0.08';
+    $('rGamma').value = '0.06'; $('vGamma').textContent = '0.060';
+    drawTab2();
+  };
+
+  const EXP_COLORS = [
+    'var(--c-c)', 'var(--c-b)', 'var(--c-a)', 'var(--c-d)',
+    'var(--bad)', 'var(--good)', 'var(--warn)', 'var(--accent)',
+    '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6',
+    '#ec4899', '#14b8a6', '#f97316', '#6366f1'
+  ];
+
+  function drawTab2() {
+    const common = { nExperts: P2.nExperts, topK: P2.topK, steps: P2.steps, alphaAux: P2.alphaAux, biasGamma: P2.biasGamma, seed: P2.seed };
+    runs2 = {
+      none: S.simTrainingBalance(Object.assign({ mode: 'none' }, common)),
+      aux: S.simTrainingBalance(Object.assign({ mode: 'aux' }, common)),
+      bias: S.simTrainingBalance(Object.assign({ mode: 'bias' }, common))
+    };
+    $('seed2Lbl').textContent = `Training seed #${P2.seed} (top-${P2.topK} of ${P2.nExperts})`;
+
+    const focus = runs2[P2.mode];
+    const modeLabel = { none: 'No balancing (collapse)', aux: `Switch aux loss (α = ${P2.alphaAux.toFixed(2)})`, bias: `DeepSeek-V3 bias (γ = ${P2.biasGamma.toFixed(3)})` }[P2.mode];
+    $('h2a').innerHTML = `Expert load shares <em>f<sub>i</sub></em> &mdash; ${esc(modeLabel)}`;
+
+    // ---- Chart 2a: Expert load shares over 80 steps ----
+    const W = 500, H = 290, m = { l: 46, r: 22, t: 22, b: 36 };
+    const plotW = W - m.l - m.r, plotH = H - m.t - m.b;
+    let maxShare = 0;
+    focus.history.forEach((h) => h.shares.forEach((v) => { if (v > maxShare) maxShare = v; }));
+    const yMaxA = Math.min(1.0, Math.max(2.6 / P2.nExperts, Math.ceil(maxShare * 10) / 10));
+    const sx = (st) => m.l + ((st - 1) / (P2.steps - 1)) * plotW;
+    const syA = (v) => m.t + plotH - (v / yMaxA) * plotH;
+
+    let svgA = '';
+    // Dead expert zone shading (< 0.2 / N)
+    const deadThresh = 0.2 / P2.nExperts;
+    svgA += `<rect x="${m.l}" y="${syA(deadThresh).toFixed(1)}" width="${plotW}" height="${(syA(0) - syA(deadThresh)).toFixed(1)}" fill="var(--bad)" fill-opacity=".08"/>`;
+
+    // Y ticks
+    const nYT = 4;
+    for (let i = 0; i <= nYT; i++) {
+      const v = (i / nYT) * yMaxA;
+      const yy = syA(v);
+      svgA += `<line class="grid-l" x1="${m.l}" x2="${W - m.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}"/>`;
+      svgA += `<text x="${m.l - 6}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end">${(v * 100).toFixed(0)}%</text>`;
+    }
+    [1, 20, 40, 60, 80].forEach((st) => {
+      svgA += `<text x="${sx(st).toFixed(1)}" y="${H - m.b + 16}" text-anchor="middle">${st}</text>`;
+    });
+    svgA += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${syA(0)}" y2="${syA(0)}"/>`;
+    svgA += `<text x="${(m.l + W - m.r) / 2}" y="${H - 4}" text-anchor="middle">training step</text>`;
+    svgA += `<text x="4" y="12">load share f_i</text>`;
+
+    // Target 1/N dashed line
+    const target = 1 / P2.nExperts;
+    svgA += `<line x1="${m.l}" x2="${W - m.r}" y1="${syA(target).toFixed(1)}" y2="${syA(target).toFixed(1)}" stroke="var(--ink)" stroke-dasharray="5 4" stroke-width="1.4"/>`;
+    svgA += `<text x="${W - m.r}" y="${(syA(target) - 5).toFixed(1)}" text-anchor="end" style="fill:var(--ink);font-weight:600;font-size:10px">target 1/${P2.nExperts} (${(target * 100).toFixed(1)}%)</text>`;
+
+    // Per-expert trajectories
+    for (let e = 0; e < P2.nExperts; e++) {
+      const col = EXP_COLORS[e % EXP_COLORS.length];
+      const d = focus.history.map((h, idx) => `${idx ? 'L' : 'M'}${sx(h.step).toFixed(1)},${syA(h.shares[e]).toFixed(1)}`).join(' ');
+      const f0 = focus.history[0].shares[e];
+      const fEnd = focus.final.shares[e];
+      const dead = fEnd < deadThresh;
+      const tip = `Expert E${e} (${modeLabel})\nStep 1 share: ${(f0 * 100).toFixed(1)}% -> Step 80: ${(fEnd * 100).toFixed(1)}%\nFinal bias b_${e}: ${focus.final.biases[e].toFixed(3)} | Status: ${dead ? 'DEAD (<20% fair share)' : 'Active'}`;
+      svgA += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${P2.nExperts <= 8 ? 2.1 : 1.5}" opacity="${dead ? 0.55 : 0.9}" class="interactive"><title>${esc(tip)}</title></path>`;
+      svgA += `<circle cx="${sx(P2.steps).toFixed(1)}" cy="${syA(fEnd).toFixed(1)}" r="3.2" fill="${col}" class="interactive"><title>${esc(tip)}</title></circle>`;
+    }
+    $('c2a').innerHTML = svgA;
+    $('lg2a').innerHTML = `<span><i class="dash" style="border-color:var(--ink)"></i>uniform target 1/${P2.nExperts}</span><span><i style="background:var(--bad);opacity:.35"></i>dead-expert zone (&lt;${(deadThresh * 100).toFixed(1)}%)</span><span>${focus.final.deadExperts} / ${P2.nExperts} dead at step 80</span>`;
+
+    // ---- Chart 2b: Max/Mean Imbalance Ratio (all 3 methods overlaid) ----
+    let maxImb = 2.0;
+    ['none', 'aux', 'bias'].forEach((mk) => {
+      runs2[mk].history.forEach((h) => { if (h.imbalance > maxImb) maxImb = h.imbalance; });
+    });
+    const yMaxB = Math.max(2.2, Math.ceil(maxImb * 2) / 2);
+    const syB = (v) => m.t + plotH - ((v - 0.8) / (yMaxB - 0.8)) * plotH;
+
+    let svgB = '';
+    for (let v = 1.0; v <= yMaxB + 0.01; v += (yMaxB > 3.5 ? 1.0 : 0.5)) {
+      const yy = syB(v);
+      svgB += `<line class="grid-l" x1="${m.l}" x2="${W - m.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}"/>`;
+      svgB += `<text x="${m.l - 6}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end">${v.toFixed(1)}&times;</text>`;
+    }
+    [1, 20, 40, 60, 80].forEach((st) => {
+      svgB += `<text x="${sx(st).toFixed(1)}" y="${H - m.b + 16}" text-anchor="middle">${st}</text>`;
+    });
+    svgB += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${syB(0.8)}" y2="${syB(0.8)}"/>`;
+    svgB += `<line x1="${m.l}" x2="${W - m.r}" y1="${syB(1.0).toFixed(1)}" y2="${syB(1.0).toFixed(1)}" stroke="var(--muted)" stroke-dasharray="4 4"/>`;
+    svgB += `<text x="${(m.l + W - m.r) / 2}" y="${H - 4}" text-anchor="middle">training step</text>`;
+    svgB += `<text x="4" y="12">max / mean load</text>`;
+
+    const series2 = [
+      { key: 'none', name: 'No balancing', col: 'var(--bad)' },
+      { key: 'aux', name: 'Switch aux loss', col: 'var(--c-a)' },
+      { key: 'bias', name: 'DeepSeek aux-loss-free bias', col: 'var(--c-b)' }
+    ];
+    series2.forEach((sr) => {
+      const r = runs2[sr.key];
+      const active = sr.key === P2.mode;
+      const d = r.history.map((h, idx) => `${idx ? 'L' : 'M'}${sx(h.step).toFixed(1)},${syB(h.imbalance).toFixed(1)}`).join(' ');
+      svgB += `<path d="${d}" fill="none" stroke="${sr.col}" stroke-width="${active ? 3.0 : 2.0}" opacity="${active ? 1 : 0.78}"/>`;
+      // Interactive probe markers every 10 steps
+      for (let idx = 9; idx < r.history.length; idx += 10) {
+        const h = r.history[idx];
+        const tip = `${sr.name} (step ${h.step})\nMax/Mean imbalance: ${h.imbalance.toFixed(2)}x\nL_aux: ${h.lAux.toFixed(3)} | Dead experts: ${h.deadExperts}/${P2.nExperts}\nAux gradient interference: ${(h.gradInterference * 100).toFixed(0)}%`;
+        svgB += `<circle cx="${sx(h.step).toFixed(1)}" cy="${syB(h.imbalance).toFixed(1)}" r="${active ? 3.8 : 3.0}" fill="${sr.col}" class="interactive"><title>${esc(tip)}</title></circle>`;
+      }
+    });
+    $('c2b').innerHTML = svgB;
+
+    // KPIs for focused method
+    const ff = focus.final;
+    $('k2').innerHTML =
+      kpi(ff.imbalance <= 1.4 ? 'good' : ff.imbalance <= 2.0 ? 'warn' : 'bad', `${ff.imbalance.toFixed(2)}&times;`, 'final max/mean imbalance') +
+      kpi(ff.deadExperts === 0 ? 'good' : 'bad', `${ff.deadExperts} / ${P2.nExperts}`, 'dead experts (<20% fair share)') +
+      kpi(ff.gradInterference === 0 ? 'good' : ff.gradInterference < 0.4 ? 'warn' : 'bad', `${(ff.gradInterference * 100).toFixed(0)}%`, 'aux-loss gradient interference') +
+      kpi(ff.specialistHitRate >= 0.85 ? 'good' : 'warn', `${(ff.specialistHitRate * 100).toFixed(0)}%`, 'specialist match rate') +
+      kpi('', ff.lmLossProxy.toFixed(3), 'LM loss proxy (lower is better)');
+
+    // 3-method comparison table
+    const rows = [
+      { key: 'none', name: 'No balancing (collapse)', r: runs2.none },
+      { key: 'aux', name: `Switch aux loss (α=${P2.alphaAux.toFixed(2)})`, r: runs2.aux },
+      { key: 'bias', name: `DeepSeek-V3 bias (γ=${P2.biasGamma.toFixed(3)})`, r: runs2.bias }
+    ];
+    const bestLM = Math.min(...rows.map((x) => x.r.final.lmLossProxy));
+    $('tbl2').innerHTML = `<table class="t"><thead><tr><th>Method</th><th>Max/Mean</th><th>Switch L<sub>aux</sub></th><th>Dead experts</th><th>Aux grad interference</th><th>Specialist match</th><th>LM loss proxy</th></tr></thead><tbody>` +
+      rows.map((row) => {
+        const f = row.r.final;
+        const isSel = row.key === P2.mode;
+        const imbCls = f.imbalance <= 1.4 ? 'good' : f.imbalance >= 2.0 ? 'bad' : '';
+        const deadCls = f.deadExperts === 0 ? 'good' : 'bad';
+        const intCls = f.gradInterference === 0 ? 'good' : f.gradInterference >= 0.5 ? 'bad' : '';
+        const lmCls = Math.abs(f.lmLossProxy - bestLM) < 1e-6 ? 'good' : '';
+        return `<tr class="${isSel ? 'sel' : ''}"><td>${esc(row.name)}</td><td class="${imbCls}">${f.imbalance.toFixed(2)}&times;</td><td>${f.lAux.toFixed(3)}</td><td class="${deadCls}">${f.deadExperts} / ${P2.nExperts}</td><td class="${intCls}">${(f.gradInterference * 100).toFixed(0)}%</td><td>${(f.specialistHitRate * 100).toFixed(0)}%</td><td class="${lmCls}">${f.lmLossProxy.toFixed(3)}</td></tr>`;
+      }).join('') + `</tbody></table>`;
+
+    // Dynamic callout
+    const rNone = runs2.none.final, rAux = runs2.aux.final, rBias = runs2.bias.final;
+    $('n2').innerHTML = `<b>Why aux-loss-free bias wins the trade-off.</b> Without balancing, rich-get-richer feedback collapses routing to ${P2.nExperts - rNone.deadExperts} active expert${P2.nExperts - rNone.deadExperts === 1 ? '' : 's'} (${rNone.imbalance.toFixed(2)}&times; imbalance, ${rNone.deadExperts} dead). Switch's auxiliary loss (&alpha; = ${P2.alphaAux.toFixed(2)}) ${rAux.deadExperts === 0 ? `keeps all ${P2.nExperts} experts alive (${rAux.imbalance.toFixed(2)}&times;)` : `still leaves ${rAux.deadExperts} dead expert${rAux.deadExperts === 1 ? '' : 's'}&mdash;raise &alpha; to balance`}, but injects <b>${(rAux.gradInterference * 100).toFixed(0)}% gradient interference</b> directly into router weights, flattening specialization as &alpha; grows. DeepSeek-V3's dynamic bias (&gamma; = ${P2.biasGamma.toFixed(3)}) updates <code>b<sub>i</sub> &larr; b<sub>i</sub> &plusmn; &gamma;</code> outside backprop and applies it <em>only</em> to top-<em>k</em> selection&mdash;achieving <b>${rBias.imbalance.toFixed(2)}&times;</b> balance with <b>0% auxiliary-gradient interference</b> (in production DeepSeek-V3 adds only a tiny sequence-wise balance term to prevent single-sequence skew).`;
+  }
+
+  /* =========================================================
+     TAB 3: ACTIVE VS TOTAL PARAMS (SERVING ROOFLINE)
+     ========================================================= */
+  const P3 = { modelKey: 'qwen3-30b-a3b', gpuKey: 'h100-80', weightBytes: 2, batchSize: 1, ctx: 2048 };
+  const QUICK_B = [1, 4, 8, 16, 32, 64, 128, 256];
+  const CURVE_B = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256];
+
+  $('mSel').onchange = (e) => { P3.modelKey = e.target.value; drawTab3(); };
+  $('gSel').onchange = (e) => { P3.gpuKey = e.target.value; drawTab3(); };
+  seg('sPrec', [2, 1, 0.5], P3.weightBytes, (v) => { P3.weightBytes = +v; drawTab3(); }, (v) => (v === 2 ? 'BF16 / FP16 (2 B)' : v === 1 ? 'FP8 / INT8 (1 B)' : 'INT4 (0.5 B)'));
+  seg('sCtx', [512, 2048, 8192, 32768], P3.ctx, (v) => { P3.ctx = +v; drawTab3(); }, (v) => (v >= 1024 ? `${v / 1024}k` : String(v)));
+
+  $('rBatch').oninput = (e) => { P3.batchSize = +e.target.value; $('vBatch').textContent = String(P3.batchSize); syncQuickB(); drawTab3(); };
+
+  function syncQuickB() {
+    $('qBatch').innerHTML = QUICK_B.map((b) => `<button type="button" class="btn${P3.batchSize === b ? ' active' : ''}" data-b="${b}">B=${b}</button>`).join('');
+    $('qBatch').querySelectorAll('button').forEach((btn) => {
+      btn.onclick = () => {
+        P3.batchSize = +btn.dataset.b;
+        $('rBatch').value = String(P3.batchSize);
+        $('vBatch').textContent = String(P3.batchSize);
+        syncQuickB();
+        drawTab3();
+      };
+    });
+  }
+  syncQuickB();
+
+  function fmtGB(v) {
+    if (v >= 100) return `${v.toFixed(0)} GB`;
+    if (v >= 10) return `${v.toFixed(1)} GB`;
+    if (v >= 1) return `${v.toFixed(2)} GB`;
+    return `${(v * 1000).toFixed(0)} MB`;
+  }
+
+  function drawTab3() {
+    const r = S.moeRoofline(P3);
+    const m = r.model;
+
+    // KPI strip
+    const vramCls = r.fitsVram ? (r.vramUtilPct > 85 ? 'warn' : 'good') : 'bad';
+    $('k3').innerHTML =
+      kpi('c', `${m.activeParamsB.toFixed(1)}B / ${m.totalParamsB.toFixed(1)}B`, `active / total params (${(m.totalParamsB / m.activeParamsB).toFixed(1)}&times; sparse)`) +
+      kpi('b', m.isMoE ? `${r.expectedDistinctExperts.toFixed(1)} / ${m.nExperts}` : 'Dense (1 / 1)', m.isMoE ? `expected experts @ B=${P3.batchSize} (${(r.expertHitFraction * 100).toFixed(0)}%)` : '100% weights hit every step') +
+      kpi('a', fmtGB(r.weightBytesStepGB), `weights read / step (${(r.weightReadFraction * 100).toFixed(0)}% of total)`) +
+      kpi('', `${fmtGB(r.totalBytesPerTokGB)}/tok`, `amortized HBM read (weights + KV)`) +
+      kpi(vramCls, `${r.totalVramGB.toFixed(1)} / ${r.gpu.vramGB} GB`, r.fitsVram ? `VRAM fits (${r.vramUtilPct.toFixed(0)}% used)` : `OOM by ${(r.totalVramGB - r.gpu.vramGB).toFixed(1)} GB`);
+
+    $('vramStatus').innerHTML = r.fitsVram
+      ? `<span class="pill good">FITS (${(r.gpu.vramGB - r.totalVramGB).toFixed(1)} GB free)</span>`
+      : `<span class="pill bad">OOM &mdash; exceeds ${r.gpu.name} by ${(r.totalVramGB - r.gpu.vramGB).toFixed(1)} GB</span>`;
+
+    // ---- VRAM stacked horizontal bar ----
+    const vw = 760, vh = 72, vl = 12, vr = 12;
+    const maxGB = Math.max(r.gpu.vramGB * 1.12, r.totalVramGB * 1.06);
+    const vx = (gb) => vl + (gb / maxGB) * (vw - vl - vr);
+    const wW = Math.max(2, vx(r.weightVramGB) - vl);
+    const kvW = Math.max(0, vx(r.totalVramGB) - vx(r.weightVramGB));
+    const capX = vx(r.gpu.vramGB);
+    let vsvg = `<rect x="${vl}" y="18" width="${vw - vl - vr}" height="24" rx="5" fill="var(--surface-2)" stroke="var(--line)"/>`;
+    vsvg += `<rect x="${vl}" y="18" width="${wW.toFixed(1)}" height="24" rx="5" fill="${r.fitsVram ? 'var(--c-c)' : 'var(--bad)'}" class="interactive"><title>Total model weights (ALL ${m.totalParamsB}B params @ ${P3.weightBytes} B/param): ${r.weightVramGB.toFixed(1)} GB</title></rect>`;
+    if (kvW > 1) {
+      vsvg += `<rect x="${(vl + wW).toFixed(1)}" y="18" width="${kvW.toFixed(1)}" height="24" fill="var(--c-a)" class="interactive"><title>Batch KV cache (${P3.batchSize} seqs x ${P3.ctx} ctx, FP16): ${r.kvVramGB.toFixed(2)} GB</title></rect>`;
+    }
+    vsvg += `<line x1="${capX.toFixed(1)}" x2="${capX.toFixed(1)}" y1="8" y2="52" stroke="var(--ink)" stroke-width="2" stroke-dasharray="4 3"/>`;
+    vsvg += `<text x="${Math.min(vw - 8, capX + 4).toFixed(1)}" y="13" ${capX > vw - 130 ? 'text-anchor="end" dx="-8"' : ''} style="fill:var(--ink);font-weight:700;font-size:11px">${esc(r.gpu.name)}: ${r.gpu.vramGB} GB</text>`;
+    vsvg += `<text x="${vl}" y="62" class="num">Weights: ${r.weightVramGB.toFixed(1)} GB (all ${m.totalParamsB}B params)  +  KV cache: ${r.kvVramGB.toFixed(2)} GB  =  ${r.totalVramGB.toFixed(1)} GB total</text>`;
+    $('c3v').innerHTML = vsvg;
+
+    // ---- Chart 3a: Expected Distinct Experts Activated vs Batch Size (log x) ----
+    const W = 500, H = 290, pad = { l: 48, r: 22, t: 22, b: 36 };
+    const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+    const lx = (b) => pad.l + (Math.log2(b) / Math.log2(256)) * pw;
+    const syA = (pct) => pad.t + ph - (pct / 100) * ph;
+
+    let svgA = '';
+    [0, 25, 50, 75, 100].forEach((p) => {
+      const yy = syA(p);
+      svgA += `<line class="grid-l" x1="${pad.l}" x2="${W - pad.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}"/>`;
+      svgA += `<text x="${pad.l - 6}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end">${p}%</text>`;
+    });
+    [1, 2, 4, 8, 16, 32, 64, 128, 256].forEach((b) => {
+      const xx = lx(b);
+      svgA += `<line class="grid-l" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${pad.t}" y2="${H - pad.b}" opacity=".45"/>`;
+      svgA += `<text x="${xx.toFixed(1)}" y="${H - pad.b + 16}" text-anchor="middle">${b}</text>`;
+    });
+    svgA += `<line class="axis" x1="${pad.l}" x2="${W - pad.r}" y1="${syA(0)}" y2="${syA(0)}"/>`;
+    svgA += `<text x="${(pad.l + W - pad.r) / 2}" y="${H - 4}" text-anchor="middle">decode batch size B (log scale)</text>`;
+    svgA += `<text x="4" y="12">% of N experts hit / step</text>`;
+
+    // Current batch cursor
+    const cxB = lx(P3.batchSize);
+    svgA += `<line x1="${cxB.toFixed(1)}" x2="${cxB.toFixed(1)}" y1="${pad.t}" y2="${H - pad.b}" stroke="var(--ink)" stroke-dasharray="4 3" stroke-width="1.3"/>`;
+
+    const moeSeries = [
+      { key: 'mixtral-8x7b', col: 'var(--c-a)' },
+      { key: 'qwen3-30b-a3b', col: 'var(--c-b)' },
+      { key: 'deepseek-v3', col: 'var(--c-c)' }
+    ];
+    moeSeries.forEach((ms) => {
+      const mod = S.MODELS[ms.key];
+      const active = ms.key === P3.modelKey;
+      const pts = CURVE_B.map((b) => {
+        const e = S.expectedDistinctExperts(mod.nExperts, mod.topK, b);
+        return { b, e, pct: (e / mod.nExperts) * 100 };
+      });
+      const d = pts.map((pt, i) => `${i ? 'L' : 'M'}${lx(pt.b).toFixed(1)},${syA(pt.pct).toFixed(1)}`).join(' ');
+      svgA += `<path d="${d}" fill="none" stroke="${ms.col}" stroke-width="${active ? 3.2 : 2.0}" opacity="${active ? 1 : 0.72}"/>`;
+      // Marker at current batchSize
+      const curE = S.expectedDistinctExperts(mod.nExperts, mod.topK, P3.batchSize);
+      const curPct = (curE / mod.nExperts) * 100;
+      const tip = `${mod.name} (N=${mod.nExperts}, top-${mod.topK})\nAt B=${P3.batchSize}: ${curE.toFixed(1)} / ${mod.nExperts} experts hit (${curPct.toFixed(1)}%)\n90% of all experts hit by B=${Math.ceil(Math.log(0.1) / Math.log(1 - mod.topK / mod.nExperts))}`;
+      svgA += `<circle cx="${cxB.toFixed(1)}" cy="${syA(curPct).toFixed(1)}" r="${active ? 5 : 3.5}" fill="${ms.col}" stroke="var(--surface)" stroke-width="1.5" class="interactive"><title>${esc(tip)}</title></circle>`;
+    });
+    $('c3a').innerHTML = svgA;
+
+    // ---- Chart 3b: Effective Bytes Read per Generated Token (log-y) ----
+    const compKeys = [];
+    compKeys.push({ key: P3.modelKey, col: 'var(--c-b)', primary: true });
+    if (P3.modelKey !== 'llama-3.1-70b') compKeys.push({ key: 'llama-3.1-70b', col: 'var(--c-a)', primary: false });
+    if (P3.modelKey !== 'llama-3.1-8b') compKeys.push({ key: 'llama-3.1-8b', col: 'var(--c-d)', primary: false });
+
+    const curves = compKeys.map((ck) => ({
+      meta: ck,
+      pts: S.moeRooflineCurve({ modelKey: ck.key, gpuKey: P3.gpuKey, weightBytes: P3.weightBytes, ctx: P3.ctx, batches: CURVE_B })
+    }));
+
+    let loLog = Infinity, hiLog = -Infinity;
+    curves.forEach((c) => c.pts.forEach((pt) => {
+      const lv = Math.log10(Math.max(1e-3, pt.totalBytesPerTokGB));
+      if (lv < loLog) loLog = lv;
+      if (lv > hiLog) hiLog = lv;
+    }));
+    const yLo = Math.floor(loLog - 0.15);
+    const yHi = Math.ceil(hiLog + 0.15);
+    const syB = (gb) => pad.t + ph - ((Math.log10(Math.max(1e-3, gb)) - yLo) / Math.max(1, yHi - yLo)) * ph;
+
+    let svgB = '';
+    for (let exp = yLo; exp <= yHi; exp++) {
+      const val = Math.pow(10, exp);
+      const yy = syB(val);
+      const lbl = val >= 1 ? `${val} GB` : `${Math.round(val * 1000)} MB`;
+      svgB += `<line class="grid-l" x1="${pad.l}" x2="${W - pad.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}"/>`;
+      svgB += `<text x="${pad.l - 6}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end">${lbl}</text>`;
+    }
+    [1, 2, 4, 8, 16, 32, 64, 128, 256].forEach((b) => {
+      const xx = lx(b);
+      svgB += `<line class="grid-l" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${pad.t}" y2="${H - pad.b}" opacity=".45"/>`;
+      svgB += `<text x="${xx.toFixed(1)}" y="${H - pad.b + 16}" text-anchor="middle">${b}</text>`;
+    });
+    svgB += `<line class="axis" x1="${pad.l}" x2="${W - pad.r}" y1="${H - pad.b}" y2="${H - pad.b}"/>`;
+    svgB += `<text x="${(pad.l + W - pad.r) / 2}" y="${H - 4}" text-anchor="middle">decode batch size B (log scale)</text>`;
+    svgB += `<text x="4" y="12">effective bytes / token</text>`;
+    svgB += `<line x1="${cxB.toFixed(1)}" x2="${cxB.toFixed(1)}" y1="${pad.t}" y2="${H - pad.b}" stroke="var(--ink)" stroke-dasharray="4 3" stroke-width="1.3"/>`;
+
+    curves.forEach((c) => {
+      const d = c.pts.map((pt, i) => `${i ? 'L' : 'M'}${lx(pt.batchSize).toFixed(1)},${syB(pt.totalBytesPerTokGB).toFixed(1)}`).join(' ');
+      svgB += `<path d="${d}" fill="none" stroke="${c.meta.col}" stroke-width="${c.meta.primary ? 3.2 : 2.0}" ${c.meta.primary ? '' : 'stroke-dasharray="5 3"'} opacity="${c.meta.primary ? 1 : 0.85}"/>`;
+      const cur = S.moeRoofline({ modelKey: c.meta.key, gpuKey: P3.gpuKey, weightBytes: P3.weightBytes, batchSize: P3.batchSize, ctx: P3.ctx });
+      const tip = `${cur.model.name} @ B=${P3.batchSize}\nEffective bytes/tok: ${fmtGB(cur.totalBytesPerTokGB)} (weights ${fmtGB(cur.weightBytesPerTokGB)} + KV ${fmtGB(cur.kvBytesPerTokGB)})\nStep weight read: ${fmtGB(cur.weightBytesStepGB)} (${(cur.weightReadFraction * 100).toFixed(0)}% of total weights)\nIdeal decode: ${cur.tokPerSecPerUser.toFixed(0)} tok/s/user (${cur.regime})`;
+      svgB += `<circle cx="${cxB.toFixed(1)}" cy="${syB(cur.totalBytesPerTokGB).toFixed(1)}" r="${c.meta.primary ? 5 : 3.5}" fill="${c.meta.col}" stroke="var(--surface)" stroke-width="1.5" class="interactive"><title>${esc(tip)}</title></circle>`;
+    });
+    $('c3b').innerHTML = svgB;
+    $('lg3b').innerHTML = compKeys.map((ck) => `<span><i class="line" style="background:${ck.col}"></i>${esc(S.MODELS[ck.key].name)}${ck.primary ? ' (selected)' : ' (dense ref)'}</span>`).join('');
+
+    // ---- Model comparison table ----
+    const allKeys = ['qwen3-30b-a3b', 'mixtral-8x7b', 'deepseek-v3', 'llama-3.1-8b', 'llama-3.1-70b'];
+    $('tbl3').innerHTML = `<table class="t"><thead><tr><th>Model</th><th>Total / Active</th><th>Experts (k/N)</th><th>Hit @ B=${P3.batchSize}</th><th>Weights / step</th><th>Bytes / tok</th><th>Total VRAM</th><th>Fits ${esc(r.gpu.name)}</th><th>Ideal tok/s (per user / total)</th></tr></thead><tbody>` +
+      allKeys.map((k) => {
+        const x = S.moeRoofline({ modelKey: k, gpuKey: P3.gpuKey, weightBytes: P3.weightBytes, batchSize: P3.batchSize, ctx: P3.ctx });
+        const sel = k === P3.modelKey;
+        return `<tr class="${sel ? 'sel' : ''}"><td>${esc(x.model.name)}</td><td>${x.model.totalParamsB.toFixed(1)}B / ${x.model.activeParamsB.toFixed(1)}B</td><td>${x.model.isMoE ? `${x.model.topK} / ${x.model.nExperts}` : 'dense'}</td><td>${x.model.isMoE ? `${x.expectedDistinctExperts.toFixed(1)} (${(x.expertHitFraction * 100).toFixed(0)}%)` : '100%'}</td><td>${fmtGB(x.weightBytesStepGB)}</td><td>${fmtGB(x.totalBytesPerTokGB)}</td><td>${x.totalVramGB.toFixed(1)} GB</td><td class="${x.fitsVram ? 'good' : 'bad'}">${x.fitsVram ? 'Yes' : 'OOM'}</td><td>${x.tokPerSecPerUser.toFixed(0)} / ${x.totalTokPerSec.toFixed(0)}</td></tr>`;
+      }).join('') + `</tbody></table>`;
+
+    // Dynamic callout
+    const b1 = S.moeRoofline(Object.assign({}, P3, { batchSize: 1 }));
+    if (m.isMoE) {
+      $('n3').innerHTML = `<b>The MoE serving paradox for ${esc(m.name)}.</b> At <b>B = 1</b>, ${esc(m.name)} reads only <b>${fmtGB(b1.weightBytesStepGB)}</b> of active weights per step (${(b1.weightReadFraction * 100).toFixed(1)}% of its ${m.totalParamsB}B total). At your current batch <b>B = ${P3.batchSize}</b>, independent tokens hit an expected <b>${r.expectedDistinctExperts.toFixed(1)} of ${m.nExperts} experts</b> (${(r.expertHitFraction * 100).toFixed(0)}%), pushing step weight traffic to <b>${fmtGB(r.weightBytesStepGB)}</b> (${(r.weightReadFraction * 100).toFixed(0)}% of all parameters; 90% of experts are already touched by <em>B = ${r.batchTo90Pct}</em>). Yet even at B = 1, VRAM must hold all <b>${r.weightVramGB.toFixed(1)} GB</b> of weights&mdash;${r.fitsVram ? `which fits on ${esc(r.gpu.name)} with ${(r.gpu.vramGB - r.totalVramGB).toFixed(1)} GB left for activations and KV cache.` : `which <b>OOMs on ${esc(r.gpu.name)}</b> (${r.gpu.vramGB} GB); try quantizing to FP8/INT4 or switching to 8&times; H100 / 8&times; H200.`}`;
+    } else {
+      $('n3').innerHTML = `<b>Dense baseline (${esc(m.name)}).</b> A dense model activates 100% of its ${m.totalParamsB}B parameters at every batch size, so step weight reads stay fixed at <b>${fmtGB(r.weightBytesStepGB)}</b> while amortized weight bytes per token drop cleanly as <code>1/B</code> until KV-cache reads (${fmtGB(r.kvBytesPerTokGB)}/tok at ctx=${P3.ctx}) or compute FLOPs dominate. Compare this curve with <b>Qwen3-30B-A3B</b> or <b>Mixtral-8x7B</b> to see MoE's single-user latency advantage shrink at large <em>B</em>.`;
+    }
+  }
+
+  // Expose live state for inspection/debugging
+  window.__moe = { P1, P2, P3, res1: () => res1, runs2: () => runs2, drawTab1, drawTab2, drawTab3 };
+
+  // Render initial active tab & initialize accessible tabs at the END of the IIFE
+  const seen = {};
+  if (window.mlViz) {
+    window.mlViz.initTabs({
+      tablistId: 'tabs',
+      slugs: { p1: 'routing', p2: 'balancing', p3: 'serving' },
+      onSelect: (pid) => {
+        if (!seen[pid]) {
+          seen[pid] = true;
+          if (pid === 'p1') drawTab1();
+          else if (pid === 'p2') drawTab2();
+          else if (pid === 'p3') drawTab3();
+        }
+      }
+    });
+  } else {
+    drawTab1();
+  }
+})();
+</script>
+</body>
+</html>

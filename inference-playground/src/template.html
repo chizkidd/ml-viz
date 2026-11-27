@@ -59,6 +59,10 @@
         <div class="ctl" style="min-width:auto"><label>&nbsp;</label><div style="display:flex;gap:8px"><button class="btn primary" id="play" type="button">Pause</button><button class="btn" id="reroll" type="button">New traffic</button></div></div>
         <div class="ctl" style="min-width:auto"><label>Speed</label><div class="seg" id="speed"><button data-s="2" aria-pressed="false">2x</button><button data-s="6" aria-pressed="true">6x</button><button data-s="20" aria-pressed="false">20x</button></div></div>
       </div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Continuous prefill budget / step</label><div class="seg" id="cPf"><button data-v="0" aria-pressed="true">unlimited</button><button data-v="4" aria-pressed="false">4</button><button data-v="2" aria-pressed="false">2</button><button data-v="1" aria-pressed="false">1</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Continuous KV memory cap</label><div class="seg" id="cKv"><button data-v="none" aria-pressed="true">unlimited</button><button data-v="contig4" aria-pressed="false">4 slots (contiguous)</button><button data-v="paged4" aria-pressed="false">4 slots (paged)</button></div></div>
+      </div>
       <div class="scrub"><span class="small">time</span><input type="range" id="scrub" min="0" max="1000" value="0" aria-label="Scrub time"><span class="tt" id="tt"></span></div>
       <div class="callout" id="headline" style="margin-top:12px"></div>
     </div>
@@ -174,31 +178,56 @@
       <div class="legend"><span><i style="background:var(--c-a)"></i>naive (recompute)</span><span><i style="background:var(--c-b)"></i>with KV cache</span></div>
       <div class="callout" id="xoverNote" style="margin-top:10px"></div>
     </div>
+    <div class="card">
+      <h2>Predict first: what changes on A100 and H100? <span class="badge published">analytical prediction</span></h2>
+      <div class="small" style="margin-bottom:8px">Same model, precision, and context as selected above, compared across Tesla T4 (measured copy BW) and the upcoming A100 / H100 cross-GPU benchmark targets in <span class="mono">mini-vllm</span>.</div>
+      <div style="overflow-x:auto"><table class="t" id="gpuPredTable"></table></div>
+    </div>
   </section>
 
   <!-- ============ 4. ENGINE VS VLLM ============ -->
   <section class="panel" id="p4" hidden>
     <div class="card">
-      <h2>My engine against vLLM and Hugging Face <span class="badge measured">measured</span></h2>
-      <div class="small">Stage 12 and the vLLM comparison notebook. Tesla T4, same 64-request mixed trace replayed at each rate, over HTTP.</div>
+      <h2>Closing the gap: Stage 12 &rarr; 13 &rarr; 14 vs vLLM <span class="badge measured">measured</span></h2>
+      <div class="small">Tesla T4, same 64-request mixed trace replayed over HTTP. Stage 12 introduced the engine; Stage 13 folded GQA heads (moving 29% of attention bytes), refined buckets, and added eager fallback; Stage 14 replaced the gather copy with an in-place Triton paged-attention kernel.</div>
       <div class="controls" style="margin-top:12px">
         <div class="ctl" style="min-width:auto"><label>Model</label><div class="seg" id="segSize"><button data-v="0.5B" aria-pressed="false">Qwen2.5 0.5B</button><button data-v="1.5B" aria-pressed="true">Qwen2.5 1.5B</button></div></div>
         <div class="ctl" style="min-width:auto"><label>Metric</label><div class="seg" id="segMetric"><button data-v="tpot" aria-pressed="true">Time per token</button><button data-v="ttft" aria-pressed="false">Time to first token</button><button data-v="good" aria-pressed="false">Goodput</button></div></div>
         <div class="ctl" style="min-width:auto"><label>Scale</label><div class="seg" id="segScale"><button data-v="log" aria-pressed="true">log</button><button data-v="lin" aria-pressed="false">linear</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Series</label><div class="seg" id="segHf"><button data-v="eng" aria-pressed="true">Stages 12–14 vs vLLM</button><button data-v="all" aria-pressed="false">+ HF baselines</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>GPU target</label><div class="seg" id="segGpu"><button data-v="t4" aria-pressed="true">Tesla T4 (measured)</button><button data-v="next" aria-pressed="false">A100 / H100 (planned)</button></div></div>
       </div>
-      <svg class="chart" id="vChart" role="img" aria-label="Engine vs vLLM across arrival rates"></svg>
+      <div class="callout" id="gpuNextNote" style="margin-bottom:10px" hidden><b>Cross-GPU phase (planned):</b> Controlled A100 and H100 runs against vLLM are the next benchmark phase in <a href="https://github.com/chizkidd/mini-vllm#next-cross-gpu-inference-benchmarks" target="_blank" rel="noopener">mini-vllm</a>. See Tab 3's analytical ridge-point table for pre-benchmark predictions; T4 measurements remain plotted below.</div>
+      <svg class="chart" id="vChart" role="img" aria-label="Engine Stages 12 to 14 vs vLLM across arrival rates"></svg>
       <div class="legend" id="vLegend"></div>
       <div class="callout" id="vNote" style="margin-top:10px"></div>
       <div style="overflow-x:auto;margin-top:10px"><table class="t" id="vTable"></table></div>
     </div>
     <div class="grid two" style="margin-top:14px">
+      <div class="card">
+        <h2>The Graph-in-Batch paradox (Stage 12) <span class="badge measured">measured</span></h2>
+        <div class="small" style="margin-bottom:6px">4 req/s open-loop median TPOT. On 1.5B, the uncaptured padded-bucket control (<span class="mono">static</span>) is just as slow as <span class="mono">graph</span> (2.28&times; slower than eager), proving fixed padded buckets — not CUDA graph capture — caused the regression.</div>
+        <svg class="chart" id="vModes" role="img" aria-label="Stage 12 eager vs static vs graph median TPOT"></svg>
+        <div class="legend"><span><i style="background:var(--c-c)"></i>eager</span><span><i style="background:var(--c-a)"></i>static buckets (uncaptured)</span><span><i style="background:var(--c-b)"></i>CUDA graph</span></div>
+      </div>
+      <div class="card">
+        <div class="row-head">
+          <div><h2>Ablations at 8 req/s <span class="badge measured">measured</span></h2>
+            <div class="small" id="ablSub">In-process median TPOT (ms) at 8 req/s on the selected model size. Lower is better.</div></div>
+          <div class="seg" id="segAbl"><button data-v="s13" aria-pressed="true">Stage 13 levers</button><button data-v="s14" aria-pressed="false">Stage 14 kernels</button></div>
+        </div>
+        <svg class="chart" id="vAbl" role="img" aria-label="Stage 13 and 14 ablations at 8 req/s"></svg>
+        <div class="callout" id="ablNote" style="margin-top:10px"></div>
+      </div>
+    </div>
+    <div class="grid two" style="margin-top:14px">
       <div class="card"><h2>Single request latency <span class="badge measured">measured</span></h2>
-        <div class="small" style="margin-bottom:6px">No queueing, 128 new tokens, mean over three workloads. Lower is better.</div>
+        <div class="small" style="margin-bottom:6px">No queueing, 128 new tokens, mean over three workloads (Stage 12 HTTP). Lower is better.</div>
         <svg class="chart" id="vSingle" role="img" aria-label="Single-stream time per token"></svg></div>
-      <div class="card"><h2>Capacity <span class="badge measured">measured</span></h2>
+      <div class="card"><h2>Capacity (90% SLO attainment) <span class="badge measured">measured</span></h2>
         <div class="small" style="margin-bottom:6px" id="capSub"></div>
         <div style="overflow-x:auto"><table class="t" id="capTable"></table></div>
-        <div class="small" style="margin-top:8px">Capacity here is the highest tested arrival rate where at least 90% of requests met the latency targets. The sweep stopped at 8 req/s, so "8+" means "did not break yet".</div></div>
+        <div class="small" style="margin-top:8px">Highest tested arrival rate where &ge;90% of requests met latency targets. Sweep stopped at 8 req/s ("8+" means did not break yet). Stages 13 and 14 raised 1.5B capacity from 2 req/s to 8+ req/s (100% SLO in Stage 14).</div></div>
     </div>
   </section>
 
@@ -278,33 +307,45 @@ function lineChart(svg, series, { w = 900, h = 340, xlog = false, ylog = false, 
 /* =====================================================================
    1. BATCHING LAB
    ===================================================================== */
-let trace, resS, resC, tNow = 0, tMax = 1, paused = window.mlViz ? window.mlViz.reducedMotion() : false, speed = 6, seed = 7, last = 0;
+let trace, resS, resC, tNow = 0, tMax = 1, paused = window.mlViz ? window.mlViz.reducedMotion() : false, speed = 6, seed = 7, last = 0, cPf = 0, cKv = 'none';
 const G = { w: 1000, left: 8, right: 8, top: 16, qh: 34 };
 const syncPlay = () => { $('play').textContent = paused ? 'Play' : 'Pause'; };
+
+function simOpts() {
+  const o = {};
+  if (cPf > 0) o.maxPrefills = cPf;
+  if (cKv === 'contig4') { o.kvSlots = 4; o.paged = false; }
+  else if (cKv === 'paged4') { o.kvSlots = 4; o.paged = true; }
+  return o;
+}
 
 function runSims() {
   const B = +$('cB').value, rate = +$('cR').value, pl = +$('cL').value / 100;
   $('vB').textContent = B; $('vR').textContent = rate; $('vL').textContent = Math.round(pl * 100) + '%';
   trace = makeTrace({ n: 64, rate, pLong: pl, seed });
-  resS = simStatic(trace, B); resC = simContinuous(trace, B);
+  resS = simStatic(trace, B); resC = simContinuous(trace, B, simOpts());
   tMax = Math.max(resS.makespan, resC.makespan) * 1.02;
   $('scrub').max = 1000;
   tNow = paused ? tMax : 0; last = performance.now();
   drawKpis(); drawGantt($('gS'), resS, 'static', 'clipS'); drawGantt($('gC'), resC, 'continuous', 'clipC'); setHead(); frame(true);
 }
 function drawKpis() {
-  const k = (r, c) => kpi(c, fmt(r.goodput, 0) + ' <span style="font-size:.8rem;font-weight:500">tok/s</span>', 'goodput') +
+  const k = (r, c, extra) => kpi(c, fmt(r.goodput, 0) + ' <span style="font-size:.8rem;font-weight:500">tok/s</span>', 'goodput') +
     kpi('', fmt(r.latP50, 1) + ' s', 'median latency') + kpi('', fmt(r.latP99, 1) + ' s', '99th pct latency') +
     kpi('', fmt(r.ttftP50, 2) + ' s', 'median wait to first token') +
     kpi('', fmt(Math.max(0, (r.laneHeld - r.laneUse)) * 100, 0) + '%', 'slot-time wasted on finished requests') +
-    kpi('', fmt(r.makespan, 0) + ' s', 'time to drain all 64');
-  $('kS').innerHTML = k(resS, 'a'); $('kC').innerHTML = k(resC, 'b');
+    (extra || kpi('', fmt(r.makespan, 0) + ' s', 'time to drain all 64'));
+  $('kS').innerHTML = k(resS, 'a');
+  $('kC').innerHTML = k(resC, 'b', kpi('', fmt(resC.maxItlMs, 0) + ' ms', 'max decode stall (prefill + step)'));
 }
 function setHead() {
   const g = resC.goodput / resS.goodput, l = resS.latP50 / resC.latP50;
+  const extras = [];
+  if (cPf > 0) extras.push(`Prefill budget (${cPf}/step) caps max decode stall to <b>${fmt(resC.maxItlMs, 0)} ms</b> (in Stage 4 T4 runs, 1 prefill/step cut max gap from 107 ms to 68 ms).`);
+  if (cKv !== 'none') extras.push(`KV cap (${cKv === 'paged4' ? '4 slots paged' : '4 slots contiguous'}) blocked admission on <b>${resC.kvBlockedSteps}</b> steps.`);
   $('headline').innerHTML = `At these settings continuous batching delivers <b>${fmt(g, 2)}x the goodput</b> and a <b>${fmt(l, 1)}x lower median latency</b>. ` +
-    (g < 1.08 ? 'At this arrival rate the GPU is mostly idle, so both policies keep up and the difference is small. Raise the arrival rate.' :
-      'Static batching keeps a slot reserved until the longest reply in its batch finishes, so short replies leave hatched holes.');
+    (extras.length ? extras.join(' ') : (g < 1.08 ? 'At this arrival rate the GPU is mostly idle, so both policies keep up and the difference is small. Raise the arrival rate.' :
+      'Static batching keeps a slot reserved until the longest reply in its batch finishes, so short replies leave hatched holes.'));
 }
 function drawGantt(svg, res, policy, clipId) {
   const B = res.B, laneH = Math.max(6, Math.min(18, 250 / B)), H = G.top + B * laneH + 26 + G.qh + 6;
@@ -351,6 +392,12 @@ $('play').onclick = () => { if (tNow >= tMax) tNow = 0; paused = !paused; syncPl
 $('scrub').oninput = (e) => { tNow = +e.target.value / 1000 * tMax; paused = true; syncPlay(); frame(true); };
 $('speed').querySelectorAll('button').forEach((b) => b.onclick = () => {
   speed = +b.dataset.s; $('speed').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+});
+$('cPf').querySelectorAll('button').forEach((b) => b.onclick = () => {
+  cPf = +b.dataset.v; $('cPf').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); runSims();
+});
+$('cKv').querySelectorAll('button').forEach((b) => b.onclick = () => {
+  cKv = b.dataset.v; $('cKv').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); runSims();
 });
 
 // measured chart (closed loop + open loop D.load) + calibration table
@@ -561,6 +608,20 @@ function drawRoof() {
     note = `GPU figures other than the T4 are spec-sheet numbers and the ceiling ignores kernel overhead, so real engines land below this line. The shape is what matters: the line climbs steeply while each extra request is nearly free (weights are shared), then bends as ${bound === 'compute-bound' ? 'compute saturates' : 'KV traffic grows'} and finally stops where the KV cache fills memory. ${GPUS[$('rGpu').value].note}.`;
   }
   $('rNote').innerHTML = note;
+  drawGpuPred(c);
+}
+function drawGpuPred(c) {
+  const keys = ['T4 (16 GB), as measured', 'A100 (80 GB)', 'H100 SXM (80 GB)'];
+  let t = '<tr><th>GPU</th><th>bandwidth</th><th>FP16 peak</th><th>ridge (FLOP/B)</th><th>max seqs fit</th><th>B=1 ceiling</th><th>compute ceiling</th><th>status</th></tr>';
+  keys.forEach((k) => {
+    const g = GPUS[k], bw = g.bw * 1e9, peak = g.tf * 1e12, ridge = peak / bw;
+    const bud = g.mem * 1e9 * 0.9 - c.Wbytes, maxS = bud > 0 ? Math.floor(bud / c.kvSeq) : 0;
+    const b1 = maxS >= 1 ? Math.min(1 / ((c.Wbytes + c.kvSeq) / bw), peak / c.flopTok) : 0;
+    const comp = peak / c.flopTok;
+    const status = k.startsWith('T4') ? 'measured (14 stages)' : 'planned (next phase)';
+    t += `<tr><td>${k.replace(', as measured', '')}</td><td>${fmt(g.bw, 0)} GB/s</td><td>${fmt(g.tf, 0)} TF</td><td>${fmt(ridge, 0)}</td><td>${maxS > 0 ? fmt(maxS, 0) : 'OOM'}</td><td>${b1 > 0 ? fmt(b1, 0) + ' tok/s' : 'OOM'}</td><td>${fmt(comp, 0)} tok/s</td><td class="small">${status}</td></tr>`;
+  });
+  $('gpuPredTable').innerHTML = t;
 }
 function drawXover() {
   if (!D.kv_crossover) return;
@@ -578,35 +639,92 @@ function drawXover() {
 }
 
 /* =====================================================================
-   4. ENGINE VS VLLM
+   4. ENGINE VS VLLM (STAGES 12 -> 13 -> 14)
    ===================================================================== */
-const SYS = [
-  { k: 'vLLM', c: 'var(--c-c)', n: 'vLLM' }, { k: 'engine graph (HTTP)', c: 'var(--c-b)', n: 'mini-vllm' },
-  { k: 'HF static batch 8', c: 'var(--c-a)', n: 'HF batch 8' }, { k: 'HF sequential', c: 'var(--c-d)', n: 'HF one by one' },
-];
-let vSize = '1.5B', vMetric = 'tpot', vLog = true;
+let vSize = '1.5B', vMetric = 'tpot', vLog = true, vHf = 'eng', vAbl = 's13';
 function initVs() {
-  const wire = (id, set) => $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { set(b.dataset.v); $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); drawVs(); });
-  wire('segSize', (v) => { vSize = v; }); wire('segMetric', (v) => { vMetric = v; }); wire('segScale', (v) => { vLog = v === 'log'; });
-  drawVs(); drawSingle(); drawCap();
+  const wire = (id, set, fn) => $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { set(b.dataset.v); $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); (fn || drawVs)(); });
+  wire('segSize', (v) => { vSize = v; }, () => { drawVs(); drawAbl(); });
+  wire('segMetric', (v) => { vMetric = v; });
+  wire('segScale', (v) => { vLog = v === 'log'; });
+  wire('segHf', (v) => { vHf = v; });
+  wire('segGpu', (v) => { $('gpuNextNote').hidden = v === 't4'; }, () => {});
+  wire('segAbl', (v) => { vAbl = v; }, drawAbl);
+  drawVs(); drawModes(); drawAbl(); drawSingle(); drawCap();
 }
 const MET = {
   tpot: { f: (r) => r.tpot_p50_ms, t: 'ms per output token, median', fm: (v) => fmt(v, v < 10 ? 1 : 0) + ' ms', better: 'lower' },
   ttft: { f: (r) => r.ttft_p50_s, t: 'seconds to first token, median', fm: (v) => (v < 1 ? fmt(v * 1000, 0) + ' ms' : fmt(v, 1) + ' s'), better: 'lower' },
   good: { f: (r) => r.goodput_tok_s, t: 'tokens per second delivered', fm: (v) => fmt(v, 0) + ' tok/s', better: 'higher' },
 };
+function httpSeries() {
+  const base = [
+    { name: 'vLLM', color: 'var(--c-c)', rows: D.vllm_load.filter((x) => x.system === 'vLLM' && x.size === vSize) },
+    { name: 'Stage 14 (in-place)', color: 'var(--c-b)', rows: D.s14_http.filter((x) => x.size === vSize) },
+    { name: 'Stage 13 (folded GQA)', color: 'var(--c-d)', dash: '5 3', rows: D.s13_http.filter((x) => x.size === vSize) },
+    { name: 'Stage 12 (gather)', color: 'var(--c-a)', dash: '3 3', rows: D.vllm_load.filter((x) => x.system === 'engine graph (HTTP)' && x.size === vSize) },
+  ];
+  if (vHf === 'all') {
+    base.push(
+      { name: 'HF batch 8', color: 'var(--bad)', rows: D.vllm_load.filter((x) => x.system === 'HF static batch 8' && x.size === vSize) },
+      { name: 'HF one by one', color: 'var(--muted)', rows: D.vllm_load.filter((x) => x.system === 'HF sequential' && x.size === vSize) },
+    );
+  }
+  return base;
+}
 function drawVs() {
   const M = MET[vMetric], rates = [1, 2, 4, 8];
-  const series = SYS.map((s) => ({ name: s.n, color: s.c, pts: rates.map((r) => { const row = D.vllm_load.find((x) => x.system === s.k && x.size === vSize && x.rate === r); return row ? [r, M.f(row)] : null; }).filter(Boolean) })).filter((s) => s.pts.length);
-  const log = vLog;
-  lineChart($('vChart'), series, { xlog: false, ylog: log, xticks: rates, xr: [1, 8.4], xTitle: 'arrival rate (requests per second)', yTitle: M.t, yfmt: (v) => (vMetric === 'ttft' ? (v < 1 ? fmt(v * 1000, 0) + ' ms' : fmt(v, v < 10 ? 1 : 0) + ' s') : fmt(v, v < 10 ? 1 : 0)), xfmt: (v) => v });
+  const raw = httpSeries();
+  const series = raw.map((s) => ({
+    name: s.name, color: s.color, dash: s.dash,
+    pts: rates.map((r) => { const row = s.rows.find((x) => x.rate === r); return row ? [r, M.f(row)] : null; }).filter(Boolean),
+  })).filter((s) => s.pts.length);
+  lineChart($('vChart'), series, { xlog: false, ylog: vLog, xticks: rates, xr: [1, 8.6], xTitle: 'arrival rate (requests per second)', yTitle: M.t, yfmt: (v) => (vMetric === 'ttft' ? (v < 1 ? fmt(v * 1000, 0) + ' ms' : fmt(v, v < 10 ? 1 : 0) + ' s') : fmt(v, v < 10 ? 1 : 0)), xfmt: (v) => v });
   $('vLegend').innerHTML = series.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('') + `<span class="small">${M.better} is better</span>`;
   let t = '<tr><th>requests/s</th>' + series.map((s) => `<th>${s.name}</th>`).join('') + '</tr>';
-  rates.forEach((r) => { t += `<tr><td>${r}</td>` + SYS.filter((s) => series.find((x) => x.name === s.n)).map((s) => { const row = D.vllm_load.find((x) => x.system === s.k && x.size === vSize && x.rate === r); return `<td>${row ? M.fm(M.f(row)) : 'n/a'}</td>`; }).join('') + '</tr>'; });
+  rates.forEach((r) => {
+    t += `<tr><td>${r}</td>` + raw.filter((s) => series.find((x) => x.name === s.name)).map((s) => {
+      const row = s.rows.find((x) => x.rate === r);
+      return `<td>${row ? M.fm(M.f(row)) : 'n/a'}</td>`;
+    }).join('') + '</tr>';
+  });
   $('vTable').innerHTML = t;
-  const e8 = D.vllm_load.find((x) => x.system === 'engine graph (HTTP)' && x.size === vSize && x.rate === 8), v8 = D.vllm_load.find((x) => x.system === 'vLLM' && x.size === vSize && x.rate === 8);
-  const e1 = D.vllm_load.find((x) => x.system === 'engine graph (HTTP)' && x.size === vSize && x.rate === 1), v1 = D.vllm_load.find((x) => x.system === 'vLLM' && x.size === vSize && x.rate === 1);
-  $('vNote').innerHTML = `At <b>1 req/s</b> my engine is within <b>${fmt(e1.tpot_p50_ms / v1.tpot_p50_ms, 1)}x</b> of vLLM on time per token (${fmt(e1.tpot_p50_ms, 0)} ms vs ${fmt(v1.tpot_p50_ms, 0)} ms). At <b>8 req/s</b> it falls to ${fmt(e8.tpot_p50_ms, 0)} ms vs ${fmt(v8.tpot_p50_ms, 0)} ms (<b>${fmt(e8.tpot_p50_ms / v8.tpot_p50_ms, 1)}x</b> slower) and delivers ${fmt(e8.goodput_tok_s, 0)} vs ${fmt(v8.goodput_tok_s, 0)} tok/s. Switch the metric to first-token wait to see the Hugging Face baselines, which queue whole batches or whole requests.`;
+  const s12_8 = D.vllm_load.find((x) => x.system === 'engine graph (HTTP)' && x.size === vSize && x.rate === 8);
+  const s13_8 = D.s13_http.find((x) => x.size === vSize && x.rate === 8);
+  const s14_8 = D.s14_http.find((x) => x.size === vSize && x.rate === 8);
+  const v8 = D.vllm_load.find((x) => x.system === 'vLLM' && x.size === vSize && x.rate === 8);
+  $('vNote').innerHTML = `At <b>8 req/s (${vSize})</b>, HTTP median TPOT drops from <b>${fmt(s12_8.tpot_p50_ms, 1)} ms</b> (Stage 12 gather) &rarr; <b>${fmt(s13_8.tpot_p50_ms, 1)} ms</b> (Stage 13 folded GQA + fine buckets) &rarr; <b>${fmt(s14_8.tpot_p50_ms, 1)} ms</b> (Stage 14 in-place Triton paged kernel, <b>${fmt(s14_8.goodput_tok_s, 0)} tok/s</b>, <b>${fmt(s14_8.slo_attainment * 100, 0)}% SLO</b>) against vLLM's <b>${fmt(v8.tpot_p50_ms, 1)} ms</b> (separate session) — shrinking the gap from <b>${fmt(s12_8.tpot_p50_ms / v8.tpot_p50_ms, 1)}x</b> to <b>${fmt(s14_8.tpot_p50_ms / v8.tpot_p50_ms, 1)}x</b>.`;
+}
+function drawModes() {
+  if (!D.s12_modes) return;
+  const cols = { eager: 'var(--c-c)', static: 'var(--c-a)', graph: 'var(--c-b)' };
+  const groups = ['0.5B', '1.5B'].map((sz) => ({
+    label: `Qwen2.5 ${sz} (4 req/s)`,
+    bars: ['eager', 'static', 'graph'].map((m) => {
+      const r = D.s12_modes.find((x) => x.size === sz && x.mode === m);
+      return { name: m, v: r ? r.tpot_p50_ms : 0, color: cols[m] };
+    }),
+  }));
+  barChart($('vModes'), groups, { w: 500, h: 225, fmtV: (v) => fmt(v, 1), yTitle: 'median TPOT (ms)' });
+}
+function drawAbl() {
+  const rows = (vAbl === 's13' ? D.s13_ablation : D.s14_ablation).filter((r) => r.size === vSize);
+  const groups = rows.map((r) => ({
+    label: r.variant,
+    bars: [{ name: r.system, v: r.tpot_p50_ms, color: r.variant === 'V6' || r.variant === 'K4' || r.variant === 'K1' ? 'var(--c-b)' : (r.variant === 'V1' || r.variant === 'B0' ? 'var(--c-a)' : 'var(--c-c)') }],
+  }));
+  barChart($('vAbl'), groups, { w: 500, h: 220, fmtV: (v) => fmt(v, 0), yTitle: 'median TPOT at 8 req/s (ms)' });
+  if (vAbl === 's13') {
+    const v1 = rows.find((r) => r.variant === 'V1'), v3 = rows.find((r) => r.variant === 'V3'), v6 = rows.find((r) => r.variant === 'V6');
+    $('ablNote').innerHTML = v1 && v3 && v6
+      ? `<b>Stage 13 (${vSize}):</b> V1 expand+graph (<b>${fmt(v1.tpot_p50_ms, 0)} ms</b>) &rarr; V3 fold GQA (<b>${fmt(v3.tpot_p50_ms, 0)} ms</b>, moving 29% of attention bytes) &rarr; V6 all three levers (<b>${fmt(v6.tpot_p50_ms, 0)} ms</b>). Folding delivered the lion's share of the win.`
+      : '';
+  } else {
+    const b0 = rows.find((r) => r.variant === 'B0'), k0 = rows.find((r) => r.variant === 'K0'), best = rows.reduce((a, r) => (r.tpot_p50_ms < a.tpot_p50_ms ? r : a), rows[0]);
+    $('ablNote').innerHTML = b0 && k0 && best
+      ? `<b>Stage 14 (${vSize}):</b> B0 Stage 12 baseline (<b>${fmt(b0.tpot_p50_ms, 0)} ms</b>) &rarr; K0 Stage 13 gather (<b>${fmt(k0.tpot_p50_ms, 0)} ms</b>) &rarr; <b>${best.variant}</b> in-place kernel (<b>${fmt(best.tpot_p50_ms, 0)} ms</b>). Once the in-place kernel made large batches cheap, Stage 13's eager fallback went from a help to a cost.`
+      : '';
+  }
 }
 function drawSingle() {
   const sys = ['vLLM', 'engine graph (HTTP)', 'HF sequential'], names = { 'vLLM': 'vLLM', 'engine graph (HTTP)': 'mini-vllm', 'HF sequential': 'HF' };
@@ -617,13 +735,20 @@ function drawSingle() {
 }
 function drawCap() {
   $('capSub').textContent = `Targets: first token within ${D.slo.ttft_s} s and under ${D.slo.tpot_s * 1000} ms per token.`;
-  const names = { 'vLLM': 'vLLM', 'engine graph (HTTP)': 'mini-vllm', 'HF sequential': 'HF one by one', 'HF static batch 8': 'HF batch 8' };
-  let t = '<tr><th>system</th><th>0.5B</th><th>1.5B</th></tr>';
-  Object.keys(names).forEach((s) => {
-    const cell = (sz) => { const r = D.capacity.find((x) => x.system === s && x.size === sz); return r && r.capacity_req_s != null ? (r.capacity_req_s >= 8 ? '8+ req/s' : fmt(r.capacity_req_s, 0) + ' req/s') : 'under 1 req/s'; };
-    t += `<tr><td>${names[s]}</td><td>${cell('0.5B')}</td><td>${cell('1.5B')}</td></tr>`;
-  });
-  $('capTable').innerHTML = t;
+  const capOf = (rows) => {
+    const ok = rows.filter((r) => r.slo_attainment >= 0.9).map((r) => r.rate);
+    return ok.length ? (Math.max(...ok) >= 8 ? '8+ req/s' : fmt(Math.max(...ok), 0) + ' req/s') : 'under 1 req/s';
+  };
+  const cellVC = (sys, sz) => { const r = D.capacity.find((x) => x.system === sys && x.size === sz); return r && r.capacity_req_s != null ? (r.capacity_req_s >= 8 ? '8+ req/s' : fmt(r.capacity_req_s, 0) + ' req/s') : 'under 1 req/s'; };
+  const rows = [
+    ['vLLM', cellVC('vLLM', '0.5B'), cellVC('vLLM', '1.5B')],
+    ['mini-vllm Stage 14 (in-place)', capOf(D.s14_http.filter((r) => r.size === '0.5B')), capOf(D.s14_http.filter((r) => r.size === '1.5B'))],
+    ['mini-vllm Stage 13 (folded GQA)', capOf(D.s13_http.filter((r) => r.size === '0.5B')), capOf(D.s13_http.filter((r) => r.size === '1.5B'))],
+    ['mini-vllm Stage 12 (gather)', cellVC('engine graph (HTTP)', '0.5B'), cellVC('engine graph (HTTP)', '1.5B')],
+    ['HF batch 8', cellVC('HF static batch 8', '0.5B'), cellVC('HF static batch 8', '1.5B')],
+    ['HF one by one', cellVC('HF sequential', '0.5B'), cellVC('HF sequential', '1.5B')],
+  ];
+  $('capTable').innerHTML = '<tr><th>system</th><th>0.5B</th><th>1.5B</th></tr>' + rows.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('');
 }
 
 /* ---------- boot ---------- */

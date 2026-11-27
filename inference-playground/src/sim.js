@@ -8,6 +8,7 @@ const CAL = {
   // contexts and more scheduler work, so the fitted per-sequence cost is higher.
   stepBase: 24, stepPerSeq: 0.3,       // decode step (ms) = base + perSeq * active sequences
   prefillPerTok: 0.12, prefillFloor: 30, // prefill (ms) = max(floor, perTok * padded prompt tokens)
+  slotMaxTokens: 732,                  // Stage 5 contiguous slot reservation (tokens)
 };
 const stepMs = (n) => CAL.stepBase + CAL.stepPerSeq * n;
 const prefillMs = (tokens) => Math.max(CAL.prefillFloor, CAL.prefillPerTok * tokens);
@@ -34,48 +35,72 @@ function makeTrace({ n = 64, rate = 4, pLong = 0.25, seed = 1, closed = false } 
 // Static batching: take up to B queued requests, prefill them padded to the longest prompt, then decode until the
 // longest output in the batch is done. Slots of finished requests sit idle until the whole batch ends.
 function simStatic(reqs, B) {
-  const q = reqs.map((r) => ({ ...r })), items = []; let t = 0, i = 0;
+  const q = reqs.map((r) => ({ ...r })), items = []; let t = 0, i = 0, maxItlMs = 0;
   while (i < q.length) {
     if (q[i].arrival > t) t = q[i].arrival;
     const batch = []; while (i < q.length && batch.length < B && q[i].arrival <= t) batch.push(q[i++]);
     const maxP = Math.max(...batch.map((r) => r.prompt)), maxO = Math.max(...batch.map((r) => r.out));
     const pf = prefillMs(batch.length * maxP) / 1000, st = stepMs(batch.length) / 1000;
+    maxItlMs = Math.max(maxItlMs, st * 1000);
     const start = t, decodeStart = t + pf, end = decodeStart + maxO * st;
     batch.forEach((r, k) => items.push({ id: r.id, slot: k, arrival: r.arrival, start, decodeStart,
       done: decodeStart + r.out * st, hold: end, out: r.out, isLong: r.isLong }));
     t = end;
   }
-  return summarize(items, B, t);
+  return summarize(items, B, t, maxItlMs, 0);
 }
 
-// Continuous batching: every iteration, admit queued requests into free slots, then one decode step for all active.
-function simContinuous(reqs, B) {
-  const q = reqs.map((r) => ({ ...r })), items = [], slots = new Array(B).fill(null); let t = 0, i = 0, active = 0;
+// Continuous batching: every iteration, admit queued requests into free slots subject to optional
+// prefill budget (maxPrefills) and KV memory pool capacity (kvSlots, paged, blockSize), then one decode step.
+function simContinuous(reqs, B, opts = {}) {
+  const maxPrefills = opts.maxPrefills > 0 ? opts.maxPrefills : Infinity;
+  const kvPool = opts.kvSlots > 0 ? opts.kvSlots * CAL.slotMaxTokens : Infinity;
+  const paged = opts.paged !== false;
+  const blockSize = opts.blockSize || 16;
+  const kvNeed = (r) => (paged ? Math.ceil(Math.min(CAL.slotMaxTokens, r.prompt + r.out) / blockSize) * blockSize : CAL.slotMaxTokens);
+
+  const q = reqs.map((r) => ({ ...r })), items = [], slots = new Array(B).fill(null);
+  let t = 0, i = 0, active = 0, kvUsed = 0, maxItlMs = 0, kvBlockedSteps = 0;
+
   while (i < q.length || active > 0) {
     if (active === 0 && i < q.length && q[i].arrival > t) t = q[i].arrival;
     let admitTok = 0; const admitted = [];
-    for (let s = 0; s < B && i < q.length && q[i].arrival <= t; s++) {
+    const hadRunning = active > 0;
+    let blockedByKv = false;
+    for (let s = 0; s < B && i < q.length && q[i].arrival <= t && admitted.length < maxPrefills; s++) {
       if (slots[s]) continue;
-      const r = q[i++]; admitTok += r.prompt;
-      slots[s] = { r, left: r.out, start: t, decodeStart: 0 }; active++; admitted.push(slots[s]);
+      const r = q[i], need = kvNeed(r);
+      if (kvUsed + need > kvPool) { blockedByKv = true; break; }
+      i++; admitTok += r.prompt; kvUsed += need;
+      slots[s] = { r, left: r.out, start: t, decodeStart: 0, kv: need }; active++; admitted.push(slots[s]);
     }
-    if (admitted.length) { const pf = prefillMs(admitTok) / 1000; t += pf; admitted.forEach((a) => { a.decodeStart = t; }); }
-    t += stepMs(active) / 1000;
-    for (let s = 0; s < B; s++) { const a = slots[s]; if (!a) continue;
-      if (--a.left === 0) { items.push({ id: a.r.id, slot: s, arrival: a.r.arrival, start: a.start, decodeStart: a.decodeStart,
-        done: t, hold: t, out: a.r.out, isLong: a.r.isLong }); slots[s] = null; active--; } }
+    if (blockedByKv) kvBlockedSteps++;
+    let pfMs = 0;
+    if (admitted.length) { pfMs = prefillMs(admitTok); t += pfMs / 1000; admitted.forEach((a) => { a.decodeStart = t; }); }
+    const stMs = stepMs(active);
+    if (hadRunning) maxItlMs = Math.max(maxItlMs, pfMs + stMs);
+    else if (active > 0) maxItlMs = Math.max(maxItlMs, stMs);
+    t += stMs / 1000;
+    for (let s = 0; s < B; s++) {
+      const a = slots[s]; if (!a) continue;
+      if (--a.left === 0) {
+        items.push({ id: a.r.id, slot: s, arrival: a.r.arrival, start: a.start, decodeStart: a.decodeStart,
+          done: t, hold: t, out: a.r.out, isLong: a.r.isLong });
+        kvUsed -= a.kv; slots[s] = null; active--;
+      }
+    }
   }
-  return summarize(items, B, t);
+  return summarize(items, B, t, maxItlMs, kvBlockedSteps);
 }
 
 function pct(arr, p) { const a = [...arr].sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length))] : 0; }
-function summarize(items, B, makespan) {
+function summarize(items, B, makespan, maxItlMs, kvBlockedSteps) {
   items.sort((a, b) => a.id - b.id);
   const toks = items.reduce((s, x) => s + x.out, 0);
   const lat = items.map((x) => x.done - x.arrival), ttft = items.map((x) => x.decodeStart - x.arrival);
   const heldLane = items.reduce((s, x) => s + (x.hold - x.start), 0), usefulLane = items.reduce((s, x) => s + (x.done - x.start), 0);
   return { items, B, makespan, goodput: toks / makespan, latP50: pct(lat, .5), latP99: pct(lat, .99), ttftP50: pct(ttft, .5),
-    laneUse: usefulLane / (B * makespan), laneHeld: heldLane / (B * makespan) };
+    laneUse: usefulLane / (B * makespan), laneHeld: heldLane / (B * makespan), maxItlMs, kvBlockedSteps };
 }
 
 if (typeof module !== 'undefined') module.exports = { CAL, stepMs, prefillMs, rng, makeTrace, simStatic, simContinuous };

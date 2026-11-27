@@ -1,0 +1,1853 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Policy Gradients: REINFORCE &amp; Actor-Critic</title>
+<meta name="description" content="Explore why stochastic policies beat epsilon-greedy on the Short Corridor with switched actions, watch learned baselines slash REINFORCE variance without bias, and step through online one-step Actor-Critic.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Policy Gradients: REINFORCE &amp; Actor-Critic — ml-viz">
+<meta property="og:description" content="Live seeded RL simulations for Sutton &amp; Barto Ch. 13: Short Corridor with switched actions, REINFORCE with learned baselines, and one-step Actor-Critic.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/policy-gradients/">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="../shared/theme.css">
+<style>
+  .chart-wrap { overflow-x: auto; }
+  .chart-wrap svg { min-width: 540px; }
+  .stepline { font: .85rem var(--mono); background: var(--surface-2); padding: 10px 12px; border-radius: 10px; line-height: 1.65; overflow-x: auto; margin-top: 10px; }
+  .stepline b { color: var(--ink); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .pill { display: inline-block; font: 600 12px var(--sans); padding: 5px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
+  .pill.on { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .pill.bad { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+  .pill.good { border-color: var(--good); color: var(--good); background: color-mix(in srgb, var(--good) 10%, transparent); }
+  .mt { margin-top: 12px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 860px) { .split { grid-template-columns: minmax(0, 1fr); } }
+  .split > * { min-width: 0; }
+  #tbl2 { overflow-x: auto; }
+  table.t td.l, table.t th.l { text-align: left; }
+  table.t td.bad { color: var(--bad); font-weight: 700; }
+  table.t td.good { color: var(--good); font-weight: 700; }
+  table.t tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .legend i.line { height: 3px; width: 16px; border-radius: 2px; vertical-align: 3px; }
+  .legend i.dash { height: 0; width: 16px; border-top: 2px dashed var(--muted); vertical-align: 3px; background: transparent; border-radius: 0; }
+  .ctl.wide { min-width: 210px; }
+  svg.chart text.num { font: 10px var(--mono); }
+  svg.chart .hit { cursor: pointer; }
+  .progress { height: 6px; border-radius: 4px; background: var(--surface-2); overflow: hidden; width: 150px; display: inline-block; vertical-align: middle; }
+  .progress > span { display: block; height: 100%; background: var(--accent); width: 0; }
+  .subhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+</style>
+<script src="../shared/ui.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a href="../">&larr; ml-viz</a>
+    <span class="sp"></span>
+    <a href="https://chizkidd.github.io/RL-Sutton-Barto-notes/chapters/ch13-policy-gradient-methods.html" target="_blank" rel="noopener">my Ch. 13 notes</a>
+    <button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
+  </div>
+  <h1>Policy Gradients: REINFORCE &amp; Actor-Critic</h1>
+  <p class="lede">Value-based control learns action values and acts nearly deterministically, which breaks when the best policy must genuinely randomize. Policy gradient methods parameterize &pi;(a&thinsp;|&thinsp;s,&thinsp;&theta;) directly and climb expected return by gradient ascent &mdash; first via Monte Carlo REINFORCE, then with variance-reducing baselines, and finally online at every step with Actor-Critic. Everything here is <span class="badge simulated">computed live</span> in your browser with fixed seeds.</p>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" aria-selected="true" data-p="p1">1. Why stochastic policies?</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p2">2. REINFORCE &amp; baselines</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p3">3. Actor-Critic vs REINFORCE</button>
+  </div>
+
+  <!-- ===== 1. SHORT CORRIDOR / STOCHASTIC POLICIES ===== -->
+  <section class="panel" id="p1">
+    <div class="card">
+      <div class="small" style="margin-bottom:10px"><b>Short Corridor with Switched Actions</b> (Sutton &amp; Barto, Example 13.1). Four states: s<sub>0</sub>, s<sub>1</sub>, s<sub>2</sub>, and terminal goal G. Every step costs &minus;1 (&gamma; = 1). In s<sub>0</sub> and s<sub>2</sub>, <b>right</b> moves +1 and <b>left</b> moves &minus;1 (clamped at s<sub>0</sub>). In <b>s<sub>1</sub></b>, the actions are <b>switched</b>: <b>right</b> goes back to s<sub>0</sub>, while <b>left</b> advances to s<sub>2</sub>. Because all states look identical to the agent, the policy must choose a single probability p = &pi;(right) everywhere.</div>
+      <div class="controls">
+        <div class="ctl wide"><label for="rP">policy p(right) <span class="val" id="vP">0.59</span></label><input type="range" id="rP" min="0.05" max="0.95" step="0.01" value="0.59"></div>
+        <div class="ctl" style="min-width:auto"><label>Presets</label><div class="seg" id="sP"></div></div>
+      </div>
+      <div class="row">
+        <button class="btn" id="b1New" type="button">New episode</button>
+        <button class="btn" id="b1Step" type="button">Step</button>
+        <button class="btn primary" id="b1Play" type="button">Play</button>
+        <button class="btn" id="b1Fin" type="button">Finish episode</button>
+        <button class="btn" id="b1Mc" type="button">Run 500 MC episodes</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="subhead">
+        <h3>Corridor dynamics &amp; live walker</h3>
+        <span class="small" id="walkState"></span>
+      </div>
+      <div class="chart-wrap"><svg class="chart" id="c1mdp" viewBox="0 0 760 200" role="img" aria-label="Diagram of the Short Corridor MDP with switched actions in state 1 and live walker position"></svg></div>
+      <div class="legend">
+        <span><i class="line" style="background:var(--c-c)"></i>action: right (prob p)</span>
+        <span><i class="line" style="background:var(--c-a)"></i>action: left (prob 1 &minus; p)</span>
+        <span><i style="background:var(--warn)"></i>s<sub>1</sub> switched actions</span>
+        <span><i style="background:var(--good)"></i>terminal goal G</span>
+      </div>
+      <div class="stepline" id="stepline1"></div>
+      <div class="grid kpis mt" id="k1"></div>
+    </div>
+
+    <div class="card">
+      <div class="subhead">
+        <h3>Exact value v(s<sub>0</sub>; p) across stochastic policies</h3>
+        <span class="small">Closed form: v(s<sub>0</sub>; p) = &minus;2(2 &minus; p) / [p(1 &minus; p)]</span>
+      </div>
+      <div class="chart-wrap"><svg class="chart" id="c1curve" viewBox="0 0 760 300" role="img" aria-label="Exact expected return v(s0) versus probability of choosing right, showing interior stochastic optimum near 0.59"></svg></div>
+      <div class="legend">
+        <span><i class="line" style="background:var(--c-c)"></i>exact v(s<sub>0</sub>; p)</span>
+        <span><i style="background:var(--good)"></i>optimal stochastic policy p* = 2 &minus; &radic;2 &approx; 0.586 (v* &approx; &minus;11.66)</span>
+        <span><i style="background:var(--bad)"></i>&epsilon;-greedy (&epsilon; = 0.1): p = 0.05 (&minus;82.1) &amp; p = 0.95 (&minus;44.2)</span>
+        <span><i style="background:var(--c-a)"></i>current slider p</span>
+      </div>
+    </div>
+
+    <div class="callout mt" id="n1"></div>
+  </section>
+
+  <!-- ===== 2. REINFORCE & BASELINES ===== -->
+  <section class="panel" id="p2" hidden>
+    <div class="card">
+      <div class="small" style="margin-bottom:10px"><b>REINFORCE on the Short Corridor</b> (Sutton &amp; Barto, Figs. 13.1 &amp; 13.2). Both agents start at the poor near-deterministic policy p(right) = 0.05 (expected return &minus;82.1) with identical random streams. Plain REINFORCE multiplies the score &nabla;ln&thinsp;&pi; by the full return G<sub>t</sub>. Adding a learned scalar baseline b = w shifts the update to (G<sub>t</sub> &minus; w)&nabla;ln&thinsp;&pi; &mdash; zero change to the expected gradient, dramatic drop in variance.</div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>policy step size &alpha;<sub>&theta;</sub></label><div class="seg" id="s2At"></div></div>
+        <div class="ctl" style="min-width:auto"><label>baseline step size &alpha;<sub>w</sub></label><div class="seg" id="s2Aw"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Runs averaged</label><div class="seg" id="s2Runs"></div></div>
+        <div class="ctl" style="min-width:auto"><label>Episodes</label><div class="seg" id="s2Eps"></div></div>
+        <button class="btn" id="b2Seed" type="button">New seed</button>
+        <span class="small" id="msg2"></span>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="card">
+        <h3>Average return per episode (with IQR band)</h3>
+        <div class="chart-wrap"><svg class="chart" id="c2a" viewBox="0 0 540 310" role="img" aria-label="Learning curves comparing REINFORCE with and without a learned baseline on the Short Corridor"></svg></div>
+        <div class="legend">
+          <span><i class="line" style="background:var(--c-b)"></i>REINFORCE + baseline (w)</span>
+          <span><i class="line" style="background:var(--c-a)"></i>REINFORCE (no baseline)</span>
+          <span><i class="dash"></i>optimal v* = &minus;11.66</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Policy gradient variance (log<sub>10</sub> scale)</h3>
+        <div class="chart-wrap"><svg class="chart" id="c2b" viewBox="0 0 420 310" style="min-width:360px" role="img" aria-label="Per-episode gradient variance comparison showing variance reduction from subtracting a baseline"></svg></div>
+        <div class="small mt" id="unbiased2"></div>
+      </div>
+    </div>
+
+    <div class="card mt">
+      <div class="grid kpis" id="k2"></div>
+    </div>
+
+    <div class="card mt">
+      <div class="subhead">
+        <h3>Step-size sensitivity across &alpha;<sub>&theta;</sub> (Sutton &amp; Barto Fig. 13.1 / 13.2)</h3>
+        <div class="row">
+          <span class="small" id="sweep2Msg"></span>
+          <span class="progress" id="prog2" hidden><span></span></span>
+        </div>
+      </div>
+      <div class="small" style="margin-bottom:8px">Comparing REINFORCE without baseline vs with baseline (&alpha;<sub>w</sub> = selected) across six policy step sizes using shared random seeds. Highlighted row is the active &alpha;<sub>&theta;</sub> above.</div>
+      <div id="tbl2"></div>
+    </div>
+
+    <div class="callout mt" id="n2"></div>
+  </section>
+
+  <!-- ===== 3. ACTOR-CRITIC VS REINFORCE ===== -->
+  <section class="panel" id="p3" hidden>
+    <div class="card">
+      <div class="small" style="margin-bottom:10px"><b>One-Step Actor-Critic vs Monte Carlo REINFORCE</b> (Sutton &amp; Barto, Section 13.5). REINFORCE waits until the episode ends to know G<sub>t</sub>. Actor-Critic swaps G<sub>t</sub> &minus; v(S<sub>t</sub>) for the online TD error &delta;<sub>t</sub> = R<sub>t+1</sub> + &gamma;&thinsp;v(S<sub>t+1</sub>) &minus; v(S<sub>t</sub>), updating both critic and actor <b>immediately on every step</b>. Toggle the critic representation on the Short Corridor to see both sides of bootstrapping: huge variance reduction when the critic distinguishes states, versus systematic bias when it cannot.</div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Environment &amp; critic</label><div class="seg" id="s3Env"></div></div>
+        <div class="ctl wide"><label for="r3At">actor &alpha;<sub>&theta;</sub> <span class="val" id="v3At">0.015</span></label><input type="range" id="r3At" min="0.002" max="0.2" step="0.002" value="0.015"></div>
+        <div class="ctl wide"><label for="r3Aw">critic &alpha;<sub>w</sub> <span class="val" id="v3Aw">0.10</span></label><input type="range" id="r3Aw" min="0.02" max="0.5" step="0.02" value="0.10"></div>
+        <div class="ctl" style="min-width:140px"><label for="r3Gam">discount &gamma; <span class="val" id="v3Gam">1.00</span></label><input type="range" id="r3Gam" min="0.85" max="1.0" step="0.01" value="1.0"></div>
+        <div class="ctl" style="min-width:auto"><label>Runs</label><div class="seg" id="s3Runs"></div></div>
+        <button class="btn" id="b3Seed" type="button">New seed</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="subhead">
+        <h3>Live step-by-step trace: online TD update vs end-of-episode MC update</h3>
+        <div class="row">
+          <button class="btn" id="b3Step" type="button">Step</button>
+          <button class="btn primary" id="b3Play" type="button">Play</button>
+          <button class="btn" id="b3Fin" type="button">Finish episode</button>
+          <button class="btn" id="b3NewEp" type="button">New trace</button>
+        </div>
+      </div>
+      <div class="chart-wrap"><svg class="chart" id="c3trace" viewBox="0 0 760 235" role="img" aria-label="Step-by-step live trace showing Actor-Critic updating immediately at every step while REINFORCE waits until episode termination"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--c-b)"></i>positive &delta; (reinforce action)</span>
+        <span><i style="background:var(--bad)"></i>negative &delta; (suppress action)</span>
+        <span><i style="background:var(--surface-2);border:1px solid var(--line)"></i>REINFORCE pending until episode ends</span>
+      </div>
+      <div class="stepline" id="stepline3"></div>
+    </div>
+
+    <div class="split mt">
+      <div class="card">
+        <h3>Multi-run learning curves (average return)</h3>
+        <div class="chart-wrap"><svg class="chart" id="c3a" viewBox="0 0 540 310" role="img" aria-label="Multi-run learning curves comparing one-step Actor-Critic against REINFORCE with and without baseline"></svg></div>
+        <div class="legend">
+          <span><i class="line" style="background:var(--c-c)"></i>one-step Actor-Critic</span>
+          <span><i class="line" style="background:var(--c-b)"></i>REINFORCE + baseline</span>
+          <span><i class="line" style="background:var(--c-a)"></i>REINFORCE (no baseline)</span>
+          <span><i class="dash"></i>optimal return</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Bias vs gradient variance summary</h3>
+        <div class="chart-wrap"><svg class="chart" id="c3b" viewBox="0 0 420 310" style="min-width:360px" role="img" aria-label="Comparison of final return gap and log gradient variance across Actor-Critic and REINFORCE"></svg></div>
+        <div class="small mt" id="biasMsg3"></div>
+      </div>
+    </div>
+
+    <div class="card mt">
+      <div class="grid kpis" id="k3"></div>
+    </div>
+
+    <div class="callout mt" id="n3"></div>
+  </section>
+
+  <footer class="site">Setup follows Sutton and Barto, <i>Reinforcement Learning: An Introduction</i>, 2nd ed., Chapter 13: the Short Corridor with Switched Actions (Example 13.1), REINFORCE (Section 13.3, Fig. 13.1), REINFORCE with Baseline (Section 13.4, Fig. 13.2), and One-Step Actor-Critic (Section 13.5). All simulation math lives in <span class="mono">policy-gradients/src/sim.js</span> and is verified in Node against exact 3&times;3 linear solutions and 20,000-episode Monte Carlo rollouts.</footer>
+</div>
+
+<script>
+/* Policy Gradient simulations (Sutton & Barto, ch. 13). Pure functions, no DOM.
+   Works in a browser (window.PGSIM) and in node (module.exports). */
+(function (root) {
+  'use strict';
+
+  /* ---------- seeded RNG (mulberry32, identical to td-lambda) ---------- */
+  function mulberry32(a) {
+    a = a >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---------- Short Corridor with Switched Actions (Sutton & Barto Ex. 13.1) ----------
+     States: 0, 1, 2 (non-terminal), 3 (terminal goal).
+     Reward: -1 per step, gamma = 1.
+     Actions: 0 = left, 1 = right.
+     State 0: right -> 1, left -> 0 (clamped).
+     State 1 (SWITCHED): right -> 0, left -> 2.
+     State 2: right -> 3 (terminal), left -> 1.
+     All states share identical action features: x(s, left) = [1, 0], x(s, right) = [0, 1]. */
+
+  var CORRIDOR_TERMINAL = 3;
+  var P_STAR = 2 - Math.sqrt(2);                  // ~0.5857864376
+  var V_STAR = -(6 + 4 * Math.sqrt(2));           // ~-11.6568542495
+
+  /* Exact closed-form state values for Short Corridor under p = pi(right | s):
+     From Bellman equations (gamma = 1):
+       v0 = -1 + (1 - p) v0 + p v1          => v0 = v1 - 1/p
+       v2 = -1 + (1 - p) v1 + p * 0         => v2 = -1 + (1 - p) v1
+       v1 = -1 + p v0 + (1 - p) v2          => p(1 - p) v1 = -(3 - p)
+     Yields:
+       v0(p) = -2(2 - p) / (p(1 - p))
+       v1(p) = -(3 - p) / (p(1 - p))
+       v2(p) = -3 / p */
+  function corridorValueExact(p) {
+    if (p <= 0 || p >= 1) {
+      return { v0: -Infinity, v1: -Infinity, v2: -Infinity };
+    }
+    var q = 1 - p;
+    var denom = p * q;
+    return {
+      v0: -2 * (2 - p) / denom,
+      v1: -(3 - p) / denom,
+      v2: -3 / p
+    };
+  }
+
+  /* Exact 3x3 linear system solver for (I - gamma * P(p)) v = -1.
+     Independent numerical cross-check of corridorValueExact(p) and works for any gamma <= 1. */
+  function solve3x3(A, b) {
+    var M = [
+      [A[0][0], A[0][1], A[0][2], b[0]],
+      [A[1][0], A[1][1], A[1][2], b[1]],
+      [A[2][0], A[2][1], A[2][2], b[2]]
+    ];
+    for (var col = 0; col < 3; col++) {
+      var piv = col;
+      for (var r = col + 1; r < 3; r++) {
+        if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+      }
+      if (piv !== col) {
+        var tmp = M[col]; M[col] = M[piv]; M[piv] = tmp;
+      }
+      var diag = M[col][col];
+      if (Math.abs(diag) < 1e-14) return [NaN, NaN, NaN];
+      for (var j = col; j < 4; j++) M[col][j] /= diag;
+      for (var row = 0; row < 3; row++) {
+        if (row === col) continue;
+        var f = M[row][col];
+        for (var k = col; k < 4; k++) M[row][k] -= f * M[col][k];
+      }
+    }
+    return [M[0][3], M[1][3], M[2][3]];
+  }
+
+  function corridorValueLinear(p, gamma) {
+    var g = gamma == null ? 1 : gamma;
+    var q = 1 - p;
+    var A = [
+      [1 - g * q, -g * p, 0],
+      [-g * p, 1, -g * q],
+      [0, -g * q, 1]
+    ];
+    var v = solve3x3(A, [-1, -1, -1]);
+    return { v0: v[0], v1: v[1], v2: v[2] };
+  }
+
+  /* Derivative d v0 / d p and d v0 / d theta_R (for 2-weight softmax, d p / d theta_R = p(1 - p),
+     while total directional derivative w.r.t. logit diff (theta_R - theta_L) is p(1-p) dv0/dp). */
+  function corridorDv0Dp(p) {
+    var q = 1 - p;
+    var denom = p * q;
+    return 2 * (p * p - 4 * p + 2) / (denom * denom);
+  }
+
+  function corridorStep(s, actionRight) {
+    var next;
+    if (s === 0) next = actionRight ? 1 : 0;
+    else if (s === 1) next = actionRight ? 0 : 2; // switched!
+    else if (s === 2) next = actionRight ? 3 : 1;
+    else next = 3;
+    return { nextState: next, reward: -1, done: next === CORRIDOR_TERMINAL };
+  }
+
+  function corridorEpisode(rng, p, maxSteps) {
+    var cap = maxSteps == null ? 1000 : maxSteps;
+    var s = 0, states = [], actions = [], rewards = [], total = 0, truncated = false;
+    for (var t = 0; t < cap; t++) {
+      var a = rng() < p ? 1 : 0;
+      var tr = corridorStep(s, a === 1);
+      states.push(s);
+      actions.push(a);
+      rewards.push(tr.reward);
+      total += tr.reward;
+      s = tr.nextState;
+      if (tr.done) break;
+      if (t === cap - 1) truncated = true;
+    }
+    return {
+      states: states,
+      actions: actions,
+      rewards: rewards,
+      totalReturn: total,
+      steps: states.length,
+      truncated: truncated
+    };
+  }
+
+  /* ---------- 5-state non-switched corridor (distinct state features) ----------
+     States 0..4, terminal 5. Reward -1 per step, gamma = 1 (or < 1).
+     Action 1 (right) -> s + 1, action 0 (left) -> max(0, s - 1).
+     Optimal policy always goes right: v*(0) = -5. */
+  var LINE5_N = 5;
+  var LINE5_TERMINAL = 5;
+
+  function line5Step(s, actionRight) {
+    var next = actionRight ? s + 1 : Math.max(0, s - 1);
+    return { nextState: next, reward: -1, done: next === LINE5_TERMINAL };
+  }
+
+  /* ---------- Numerically stable 2-action softmax helpers ---------- */
+  function softmaxProbRight(thetaL, thetaR) {
+    var diff = thetaR - thetaL;
+    if (diff > 30) return 1 - 1e-13;
+    if (diff < -30) return 1e-13;
+    return 1 / (1 + Math.exp(-diff));
+  }
+
+  function clampTheta(theta, epsFloor) {
+    if (!epsFloor || epsFloor <= 0) return;
+    var maxDiff = Math.log((1 - epsFloor) / epsFloor);
+    var diff = theta[1] - theta[0];
+    if (diff > maxDiff) {
+      var mid1 = 0.5 * (theta[0] + theta[1]);
+      theta[0] = mid1 - 0.5 * maxDiff;
+      theta[1] = mid1 + 0.5 * maxDiff;
+    } else if (diff < -maxDiff) {
+      var mid2 = 0.5 * (theta[0] + theta[1]);
+      theta[0] = mid2 + 0.5 * maxDiff;
+      theta[1] = mid2 - 0.5 * maxDiff;
+    }
+    // Keep theta centered to avoid drift in absolute magnitude
+    var avg = 0.5 * (theta[0] + theta[1]);
+    theta[0] -= avg;
+    theta[1] -= avg;
+  }
+
+  function initThetaFromP(pInit) {
+    var p = Math.max(1e-4, Math.min(1 - 1e-4, pInit == null ? 0.05 : pInit));
+    var halfLogit = 0.5 * Math.log(p / (1 - p));
+    return [-halfLogit, halfLogit];
+  }
+
+  /* Helper to compute quantile from sorted numeric array */
+  function quantileSorted(arr, q) {
+    var n = arr.length;
+    if (n === 0) return 0;
+    var pos = (n - 1) * q;
+    var lo = Math.floor(pos), hi = Math.ceil(pos);
+    if (lo === hi) return arr[lo];
+    return arr[lo] + (pos - lo) * (arr[hi] - arr[lo]);
+  }
+
+  function summarizeMatrix(mat, episodes) {
+    var mean = new Array(episodes);
+    var std = new Array(episodes);
+    var q25 = new Array(episodes);
+    var q50 = new Array(episodes);
+    var q75 = new Array(episodes);
+    var runs = mat.length;
+    var col = new Array(runs);
+    for (var e = 0; e < episodes; e++) {
+      var sum = 0;
+      for (var r = 0; r < runs; r++) {
+        var v = mat[r][e];
+        col[r] = v;
+        sum += v;
+      }
+      var m = sum / runs;
+      var sq = 0;
+      for (var r2 = 0; r2 < runs; r2++) {
+        var d = col[r2] - m;
+        sq += d * d;
+      }
+      col.sort(function (a, b) { return a - b; });
+      mean[e] = m;
+      std[e] = Math.sqrt(sq / runs);
+      q25[e] = quantileSorted(col, 0.25);
+      q50[e] = quantileSorted(col, 0.50);
+      q75[e] = quantileSorted(col, 0.75);
+    }
+    return { mean: mean, std: std, q25: q25, q50: q50, q75: q75 };
+  }
+
+  /* ---------- REINFORCE (with and without learned baseline) on Short Corridor ----------
+     Follows Sutton & Barto Section 13.3 & 13.4 (Figs. 13.1 and 13.2).
+     Parameterization: theta = [thetaL, thetaR], x(left) = [1, 0], x(right) = [0, 1].
+     grad_theta log pi(a) = [ (a==0 ? 1 : 0) - (1-p), (a==1 ? 1 : 0) - p ] = [ -(a - p), +(a - p) ].
+     Learned state-value baseline: v_hat(s) = w (single scalar, since states are aliased). */
+  function runReinforce(cfg) {
+    var alphaTheta = cfg.alphaTheta == null ? Math.pow(2, -12) : cfg.alphaTheta;
+    var alphaW = cfg.alphaW == null ? Math.pow(2, -6) : cfg.alphaW;
+    var useBaseline = Boolean(cfg.useBaseline);
+    var episodes = cfg.episodes == null ? 1000 : cfg.episodes;
+    var runs = cfg.runs == null ? 30 : cfg.runs;
+    var seed = cfg.seed == null ? 42 : (cfg.seed >>> 0);
+    var pInit = cfg.pInit == null ? 0.05 : cfg.pInit;
+    var epsFloor = cfg.epsFloor == null ? 0.05 : cfg.epsFloor;
+    var maxSteps = cfg.maxSteps == null ? 1000 : cfg.maxSteps;
+    var gamma = cfg.gamma == null ? 1.0 : cfg.gamma;
+
+    var returnsByRun = new Array(runs);
+    var pByRun = new Array(runs);
+    var wByRun = new Array(runs);
+    var gradByRun = new Array(runs);
+    var stepGradAbsByRun = new Array(runs);
+
+    for (var r = 0; r < runs; r++) {
+      var rng = mulberry32((seed + Math.imul(r + 1, 0x9E3779B1)) >>> 0);
+      var theta = initThetaFromP(pInit);
+      clampTheta(theta, epsFloor);
+      var w = 0;
+      var retArr = new Float64Array(episodes);
+      var pArr = new Float64Array(episodes);
+      var wArr = new Float64Array(episodes);
+      var gArr = new Float64Array(episodes);
+      var gAbsArr = new Float64Array(episodes);
+
+      for (var ep = 0; ep < episodes; ep++) {
+        var p = softmaxProbRight(theta[0], theta[1]);
+        var traj = corridorEpisode(rng, p, maxSteps);
+        var T = traj.steps;
+        retArr[ep] = traj.totalReturn;
+
+        // Precompute returns G_t from t = 0..T-1
+        var G = new Float64Array(T);
+        var runningG = 0;
+        for (var k = T - 1; k >= 0; k--) {
+          runningG = traj.rewards[k] + gamma * runningG;
+          G[k] = runningG;
+        }
+
+        // REINFORCE episode updates (t = 0..T-1)
+        var epGradR = 0;
+        var epAbsGrad = 0;
+        var gammaPow = 1;
+        for (var t = 0; t < T; t++) {
+          var pCur = softmaxProbRight(theta[0], theta[1]);
+          var a = traj.actions[t];
+          var scoreR = (a === 1 ? 1 : 0) - pCur;
+          var delta = useBaseline ? (G[t] - w) : G[t];
+          var gR = gammaPow * delta * scoreR;
+          epGradR += gR;
+          epAbsGrad += Math.abs(gR);
+
+          if (useBaseline) {
+            w += alphaW * delta;
+          }
+          theta[0] -= alphaTheta * gR;
+          theta[1] += alphaTheta * gR;
+          clampTheta(theta, epsFloor);
+          gammaPow *= gamma;
+        }
+
+        pArr[ep] = softmaxProbRight(theta[0], theta[1]);
+        wArr[ep] = w;
+        gArr[ep] = epGradR;
+        gAbsArr[ep] = epAbsGrad / Math.max(1, T);
+      }
+
+      returnsByRun[r] = retArr;
+      pByRun[r] = pArr;
+      wByRun[r] = wArr;
+      gradByRun[r] = gArr;
+      stepGradAbsByRun[r] = gAbsArr;
+    }
+
+    var retStats = summarizeMatrix(returnsByRun, episodes);
+    var pStats = summarizeMatrix(pByRun, episodes);
+    var wStats = summarizeMatrix(wByRun, episodes);
+    var gStats = summarizeMatrix(gradByRun, episodes);
+    var gAbsStats = summarizeMatrix(stepGradAbsByRun, episodes);
+
+    // Per-episode variance of the episode gradient estimate across runs
+    var gradVar = new Array(episodes);
+    var totVar = 0;
+    for (var e = 0; e < episodes; e++) {
+      var v = gStats.std[e] * gStats.std[e];
+      gradVar[e] = v;
+      totVar += v;
+    }
+
+    var tailStart = Math.max(0, Math.floor(episodes * 0.9));
+    var tailSum = 0, tailPSum = 0, tailCnt = episodes - tailStart;
+    for (var te = tailStart; te < episodes; te++) {
+      tailSum += retStats.mean[te];
+      tailPSum += pStats.mean[te];
+    }
+
+    return {
+      episodes: episodes,
+      runs: runs,
+      useBaseline: useBaseline,
+      alphaTheta: alphaTheta,
+      alphaW: alphaW,
+      meanReturn: retStats.mean,
+      stdReturn: retStats.std,
+      q25Return: retStats.q25,
+      q50Return: retStats.q50,
+      q75Return: retStats.q75,
+      meanP: pStats.mean,
+      meanBaseline: wStats.mean,
+      gradMean: gStats.mean,
+      gradStd: gStats.std,
+      gradVar: gradVar,
+      meanStepGradAbs: gAbsStats.mean,
+      meanGradVar: totVar / episodes,
+      finalReturn: tailSum / Math.max(1, tailCnt),
+      finalP: tailPSum / Math.max(1, tailCnt)
+    };
+  }
+
+  /* ---------- Fixed-policy baseline unbiasedness & variance experiment ----------
+     Evaluates g_hat(b) = sum_{t=0}^{T-1} (G_t - b) * (I(A_t=R) - p) on independent
+     Short Corridor episodes at fixed p, comparing b = 0 vs b = v0(p) vs optimal b*. */
+  function baselineVarianceCheck(cfg) {
+    var p = cfg.p == null ? 0.35 : cfg.p;
+    var episodes = cfg.episodes == null ? 4000 : cfg.episodes;
+    var seed = cfg.seed == null ? 101 : (cfg.seed >>> 0);
+    var maxSteps = cfg.maxSteps == null ? 1000 : cfg.maxSteps;
+    var rng = mulberry32(seed);
+    var exact = corridorValueExact(p);
+    var baselines = cfg.baselines || [0, exact.v0, exact.v1];
+
+    var samples = baselines.map(function () { return new Float64Array(episodes); });
+    for (var ep = 0; ep < episodes; ep++) {
+      var traj = corridorEpisode(rng, p, maxSteps);
+      var T = traj.steps;
+      for (var bi = 0; bi < baselines.length; bi++) {
+        var b = baselines[bi];
+        var g = 0;
+        for (var t = 0; t < T; t++) {
+          var Gt = -(T - t);
+          var scoreR = (traj.actions[t] === 1 ? 1 : 0) - p;
+          g += (Gt - b) * scoreR;
+        }
+        samples[bi][ep] = g;
+      }
+    }
+
+    var results = baselines.map(function (b, bi) {
+      var arr = samples[bi], sum = 0;
+      for (var i = 0; i < episodes; i++) sum += arr[i];
+      var mean = sum / episodes;
+      var sq = 0;
+      for (var j = 0; j < episodes; j++) {
+        var d = arr[j] - mean;
+        sq += d * d;
+      }
+      var variance = sq / (episodes - 1);
+      return {
+        baseline: b,
+        mean: mean,
+        variance: variance,
+        std: Math.sqrt(variance),
+        se: Math.sqrt(variance / episodes)
+      };
+    });
+
+    // Analytical score-function gradient for single logit theta_R:
+    // Because d/d(theta_R) log pi(a) = I(a=R) - p = d/d(diff) log pi(a),
+    // E[sum_t G_t (I(A_t=R) - p)] = d v0 / d(diff) = p(1 - p) * d v0 / d p
+    var trueGrad = p * (1 - p) * corridorDv0Dp(p);
+    return { p: p, exact: exact, trueGrad: trueGrad, results: results };
+  }
+
+  /* ---------- One-Step Actor-Critic (Sutton & Barto Section 13.5) ----------
+     Supports:
+       env: 'corridor' (Short Corridor, state-aliased actor; criticMode 'tabular' [3 state values]
+                        or 'aliased' [1 shared weight, demonstrating bootstrapping bias])
+       env: 'line5'    (5-state corridor with distinct state features for both actor & critic) */
+  function runActorCritic(cfg) {
+    var env = cfg.env || 'corridor';
+    var criticMode = cfg.criticMode || 'tabular';
+    var alphaTheta = cfg.alphaTheta == null ? (env === 'line5' ? 0.15 : 0.015) : cfg.alphaTheta;
+    var alphaW = cfg.alphaW == null ? (env === 'line5' ? 0.25 : 0.1) : cfg.alphaW;
+    var episodes = cfg.episodes == null ? 500 : cfg.episodes;
+    var runs = cfg.runs == null ? 30 : cfg.runs;
+    var seed = cfg.seed == null ? 42 : (cfg.seed >>> 0);
+    var pInit = cfg.pInit == null ? (env === 'line5' ? 0.3 : 0.05) : cfg.pInit;
+    var epsFloor = cfg.epsFloor == null ? (env === 'line5' ? 0.01 : 0.05) : cfg.epsFloor;
+    var maxSteps = cfg.maxSteps == null ? 1000 : cfg.maxSteps;
+    var gamma = cfg.gamma == null ? 1.0 : cfg.gamma;
+
+    var returnsByRun = new Array(runs);
+    var pByRun = new Array(runs);
+    var tdErrSqByRun = new Array(runs);
+    var gradByRun = new Array(runs);
+
+    for (var r = 0; r < runs; r++) {
+      var rng = mulberry32((seed + Math.imul(r + 1, 0x9E3779B1)) >>> 0);
+      var nStates = env === 'line5' ? LINE5_N : 3;
+      var actorPerState = env === 'line5';
+      var thetas = [];
+      for (var i = 0; i < (actorPerState ? nStates : 1); i++) {
+        var th = initThetaFromP(pInit);
+        clampTheta(th, epsFloor);
+        thetas.push(th);
+      }
+      var criticDim = (env === 'corridor' && criticMode === 'aliased') ? 1 : nStates;
+      var w = new Float64Array(criticDim);
+
+      var retArr = new Float64Array(episodes);
+      var pArr = new Float64Array(episodes);
+      var tdSqArr = new Float64Array(episodes);
+      var gArr = new Float64Array(episodes);
+
+      for (var ep = 0; ep < episodes; ep++) {
+        var s = 0, I = 1, totalR = 0, epGrad = 0, tdSq = 0, steps = 0;
+        for (var t = 0; t < maxSteps; t++) {
+          var thS = actorPerState ? thetas[s] : thetas[0];
+          var pCur = softmaxProbRight(thS[0], thS[1]);
+          var a = rng() < pCur ? 1 : 0;
+          var tr = env === 'line5' ? line5Step(s, a === 1) : corridorStep(s, a === 1);
+          totalR += tr.reward;
+          steps++;
+
+          var cIdx = criticDim === 1 ? 0 : s;
+          var vS = w[cIdx];
+          var vNext = tr.done ? 0 : w[criticDim === 1 ? 0 : tr.nextState];
+          var delta = tr.reward + gamma * vNext - vS;
+          tdSq += delta * delta;
+
+          // Critic update
+          w[cIdx] += alphaW * delta;
+
+          // Actor update (online, immediately at step t!)
+          var scoreR = (a === 1 ? 1 : 0) - pCur;
+          var gR = I * delta * scoreR;
+          epGrad += gR;
+          thS[0] -= alphaTheta * gR;
+          thS[1] += alphaTheta * gR;
+          clampTheta(thS, epsFloor);
+
+          I *= gamma;
+          s = tr.nextState;
+          if (tr.done) break;
+        }
+        retArr[ep] = totalR;
+        if (actorPerState) {
+          var pAvg = 0;
+          for (var si = 0; si < nStates; si++) pAvg += softmaxProbRight(thetas[si][0], thetas[si][1]);
+          pArr[ep] = pAvg / nStates;
+        } else {
+          pArr[ep] = softmaxProbRight(thetas[0][0], thetas[0][1]);
+        }
+        tdSqArr[ep] = tdSq / Math.max(1, steps);
+        gArr[ep] = epGrad;
+      }
+
+      returnsByRun[r] = retArr;
+      pByRun[r] = pArr;
+      tdErrSqByRun[r] = tdSqArr;
+      gradByRun[r] = gArr;
+    }
+
+    var retStats = summarizeMatrix(returnsByRun, episodes);
+    var pStats = summarizeMatrix(pByRun, episodes);
+    var tdStats = summarizeMatrix(tdErrSqByRun, episodes);
+    var gStats = summarizeMatrix(gradByRun, episodes);
+
+    var gradVar = new Array(episodes);
+    var totVar = 0;
+    for (var e = 0; e < episodes; e++) {
+      var v = gStats.std[e] * gStats.std[e];
+      gradVar[e] = v;
+      totVar += v;
+    }
+
+    var tailStart = Math.max(0, Math.floor(episodes * 0.9));
+    var tailSum = 0, tailPSum = 0, tailCnt = episodes - tailStart;
+    for (var te = tailStart; te < episodes; te++) {
+      tailSum += retStats.mean[te];
+      tailPSum += pStats.mean[te];
+    }
+
+    return {
+      env: env,
+      criticMode: criticMode,
+      episodes: episodes,
+      runs: runs,
+      alphaTheta: alphaTheta,
+      alphaW: alphaW,
+      meanReturn: retStats.mean,
+      stdReturn: retStats.std,
+      q25Return: retStats.q25,
+      q50Return: retStats.q50,
+      q75Return: retStats.q75,
+      meanP: pStats.mean,
+      meanTdSq: tdStats.mean,
+      gradStd: gStats.std,
+      gradVar: gradVar,
+      meanGradVar: totVar / episodes,
+      finalReturn: tailSum / Math.max(1, tailCnt),
+      finalP: tailPSum / Math.max(1, tailCnt)
+    };
+  }
+
+  /* ---------- REINFORCE on 5-state corridor (for fair Tab 3 side-by-side comparison) ---------- */
+  function runReinforceLine5(cfg) {
+    var alphaTheta = cfg.alphaTheta == null ? 0.05 : cfg.alphaTheta;
+    var alphaW = cfg.alphaW == null ? 0.15 : cfg.alphaW;
+    var useBaseline = cfg.useBaseline == null ? true : Boolean(cfg.useBaseline);
+    var episodes = cfg.episodes == null ? 500 : cfg.episodes;
+    var runs = cfg.runs == null ? 30 : cfg.runs;
+    var seed = cfg.seed == null ? 42 : (cfg.seed >>> 0);
+    var pInit = cfg.pInit == null ? 0.3 : cfg.pInit;
+    var epsFloor = cfg.epsFloor == null ? 0.01 : cfg.epsFloor;
+    var maxSteps = cfg.maxSteps == null ? 1000 : cfg.maxSteps;
+    var gamma = cfg.gamma == null ? 1.0 : cfg.gamma;
+
+    var returnsByRun = new Array(runs);
+    var pByRun = new Array(runs);
+    var gradByRun = new Array(runs);
+
+    for (var r = 0; r < runs; r++) {
+      var rng = mulberry32((seed + Math.imul(r + 1, 0x9E3779B1)) >>> 0);
+      var thetas = [];
+      for (var i = 0; i < LINE5_N; i++) {
+        var th = initThetaFromP(pInit);
+        clampTheta(th, epsFloor);
+        thetas.push(th);
+      }
+      var w = new Float64Array(LINE5_N);
+      var retArr = new Float64Array(episodes);
+      var pArr = new Float64Array(episodes);
+      var gArr = new Float64Array(episodes);
+
+      for (var ep = 0; ep < episodes; ep++) {
+        var s = 0, states = [], actions = [], rewards = [], totalR = 0;
+        for (var t = 0; t < maxSteps; t++) {
+          var pCur = softmaxProbRight(thetas[s][0], thetas[s][1]);
+          var a = rng() < pCur ? 1 : 0;
+          var tr = line5Step(s, a === 1);
+          states.push(s); actions.push(a); rewards.push(tr.reward);
+          totalR += tr.reward;
+          s = tr.nextState;
+          if (tr.done) break;
+        }
+        var T = states.length;
+        var G = new Float64Array(T);
+        var runG = 0;
+        for (var k = T - 1; k >= 0; k--) { runG = rewards[k] + gamma * runG; G[k] = runG; }
+
+        var epGrad = 0, gPow = 1;
+        for (var u = 0; u < T; u++) {
+          var su = states[u], au = actions[u];
+          var thU = thetas[su];
+          var pU = softmaxProbRight(thU[0], thU[1]);
+          var scoreR = (au === 1 ? 1 : 0) - pU;
+          var delta = useBaseline ? (G[u] - w[su]) : G[u];
+          var gR = gPow * delta * scoreR;
+          epGrad += gR;
+          if (useBaseline) w[su] += alphaW * delta;
+          thU[0] -= alphaTheta * gR;
+          thU[1] += alphaTheta * gR;
+          clampTheta(thU, epsFloor);
+          gPow *= gamma;
+        }
+        retArr[ep] = totalR;
+        var pAvg = 0;
+        for (var si = 0; si < LINE5_N; si++) pAvg += softmaxProbRight(thetas[si][0], thetas[si][1]);
+        pArr[ep] = pAvg / LINE5_N;
+        gArr[ep] = epGrad;
+      }
+      returnsByRun[r] = retArr;
+      pByRun[r] = pArr;
+      gradByRun[r] = gArr;
+    }
+
+    var retStats = summarizeMatrix(returnsByRun, episodes);
+    var pStats = summarizeMatrix(pByRun, episodes);
+    var gStats = summarizeMatrix(gradByRun, episodes);
+    var gradVar = new Array(episodes), totVar = 0;
+    for (var e = 0; e < episodes; e++) { gradVar[e] = gStats.std[e] * gStats.std[e]; totVar += gradVar[e]; }
+    var tailStart = Math.max(0, Math.floor(episodes * 0.9));
+    var tailSum = 0, tailPSum = 0, tailCnt = episodes - tailStart;
+    for (var te = tailStart; te < episodes; te++) { tailSum += retStats.mean[te]; tailPSum += pStats.mean[te]; }
+    return {
+      env: 'line5',
+      episodes: episodes,
+      runs: runs,
+      useBaseline: useBaseline,
+      alphaTheta: alphaTheta,
+      alphaW: alphaW,
+      meanReturn: retStats.mean,
+      stdReturn: retStats.std,
+      q25Return: retStats.q25,
+      q50Return: retStats.q50,
+      q75Return: retStats.q75,
+      meanP: pStats.mean,
+      gradStd: gStats.std,
+      gradVar: gradVar,
+      meanGradVar: totVar / episodes,
+      finalReturn: tailSum / Math.max(1, tailCnt),
+      finalP: tailPSum / Math.max(1, tailCnt)
+    };
+  }
+
+  /* ---------- Single-episode interactive trace comparing Actor-Critic vs REINFORCE ----------
+     Generates one episode trajectory and returns step-by-step records for both:
+     - Actor-Critic (updates online at every step t using TD error delta_t = R + gamma*v(S') - v(S))
+     - REINFORCE with baseline (waits until terminal state, then computes G_t and updates retroactively)
+     Both start from the same initial state values vInit and policy pInit on the same episode actions
+     (or Actor-Critic updates online as it walks). */
+  function traceEpisodeCompare(cfg) {
+    var env = cfg.env || 'corridor';
+    var criticMode = cfg.criticMode || 'tabular';
+    var pInit = cfg.pInit == null ? (env === 'line5' ? 0.45 : 0.45) : cfg.pInit;
+    var alphaTheta = cfg.alphaTheta == null ? 0.05 : cfg.alphaTheta;
+    var alphaW = cfg.alphaW == null ? 0.2 : cfg.alphaW;
+    var gamma = cfg.gamma == null ? 1.0 : cfg.gamma;
+    var epsFloor = cfg.epsFloor == null ? 0.05 : cfg.epsFloor;
+    var seed = cfg.seed == null ? 7 : (cfg.seed >>> 0);
+    var maxSteps = cfg.maxSteps == null ? 40 : cfg.maxSteps;
+    var rng = mulberry32(seed);
+
+    var nStates = env === 'line5' ? LINE5_N : 3;
+    var actorPerState = env === 'line5';
+    var criticDim = (env === 'corridor' && criticMode === 'aliased') ? 1 : nStates;
+
+    // Seed initial critic slightly warm (or zero if cfg.zeroInit) so TD deltas are illuminating
+    var wInit = new Float64Array(criticDim);
+    if (!cfg.zeroInit) {
+      if (env === 'corridor') {
+        if (criticDim === 1) wInit[0] = -10;
+        else { wInit[0] = -11; wInit[1] = -9; wInit[2] = -5; }
+      } else {
+        for (var ii = 0; ii < nStates; ii++) wInit[ii] = -(nStates - ii) * 1.4;
+      }
+    }
+
+    var wAC = new Float64Array(wInit);
+    var thAC = [];
+    for (var i = 0; i < (actorPerState ? nStates : 1); i++) {
+      var th = initThetaFromP(pInit);
+      clampTheta(th, epsFloor);
+      thAC.push(th);
+    }
+
+    var acSteps = [];
+    var s = 0, I = 1, totalR = 0;
+    for (var t = 0; t < maxSteps; t++) {
+      var thS = actorPerState ? thAC[s] : thAC[0];
+      var pBefore = softmaxProbRight(thS[0], thS[1]);
+      var a = rng() < pBefore ? 1 : 0;
+      var tr = env === 'line5' ? line5Step(s, a === 1) : corridorStep(s, a === 1);
+      totalR += tr.reward;
+
+      var cIdx = criticDim === 1 ? 0 : s;
+      var vS = wAC[cIdx];
+      var vNext = tr.done ? 0 : wAC[criticDim === 1 ? 0 : tr.nextState];
+      var delta = tr.reward + gamma * vNext - vS;
+      var dw = alphaW * delta;
+      wAC[cIdx] += dw;
+
+      var scoreR = (a === 1 ? 1 : 0) - pBefore;
+      var dThetaR = alphaTheta * I * delta * scoreR;
+      thS[0] -= dThetaR;
+      thS[1] += dThetaR;
+      clampTheta(thS, epsFloor);
+      var pAfter = softmaxProbRight(thS[0], thS[1]);
+
+      acSteps.push({
+        t: t,
+        s: s,
+        a: a,
+        r: tr.reward,
+        nextState: tr.nextState,
+        done: tr.done,
+        vS: vS,
+        vNext: vNext,
+        delta: delta,
+        dw: dw,
+        scoreR: scoreR,
+        dThetaR: dThetaR,
+        pBefore: pBefore,
+        pAfter: pAfter,
+        wSnap: Array.from(wAC)
+      });
+
+      I *= gamma;
+      s = tr.nextState;
+      if (tr.done) break;
+    }
+
+    // Now compute what REINFORCE (with baseline) would compute on the EXACT same episode
+    // once it finishes (retroactive Monte Carlo returns G_t):
+    var T = acSteps.length;
+    var G = new Float64Array(T);
+    var runG = 0;
+    for (var k = T - 1; k >= 0; k--) {
+      runG = acSteps[k].r + gamma * runG;
+      G[k] = runG;
+    }
+    var wMC = new Float64Array(wInit);
+    var thMC = [];
+    for (var m = 0; m < (actorPerState ? nStates : 1); m++) {
+      var tm = initThetaFromP(pInit);
+      clampTheta(tm, epsFloor);
+      thMC.push(tm);
+    }
+    var mcSteps = [];
+    var gPow = 1;
+    for (var u = 0; u < T; u++) {
+      var st = acSteps[u];
+      var thM = actorPerState ? thMC[st.s] : thMC[0];
+      var pB = softmaxProbRight(thM[0], thM[1]);
+      var cIdxM = criticDim === 1 ? 0 : st.s;
+      var bVal = wMC[cIdxM];
+      var deltaM = G[u] - bVal;
+      var dwM = alphaW * deltaM;
+      wMC[cIdxM] += dwM;
+      var scM = (st.a === 1 ? 1 : 0) - pB;
+      var dThM = alphaTheta * gPow * deltaM * scM;
+      thM[0] -= dThM;
+      thM[1] += dThM;
+      clampTheta(thM, epsFloor);
+      mcSteps.push({
+        t: u,
+        s: st.s,
+        a: st.a,
+        G: G[u],
+        baseline: bVal,
+        delta: deltaM,
+        dw: dwM,
+        scoreR: scM,
+        dThetaR: dThM,
+        pBefore: pB,
+        pAfter: softmaxProbRight(thM[0], thM[1])
+      });
+      gPow *= gamma;
+    }
+
+    return {
+      env: env,
+      criticMode: criticMode,
+      nStates: nStates,
+      totalReturn: totalR,
+      steps: T,
+      done: acSteps[T - 1].done,
+      acSteps: acSteps,
+      mcSteps: mcSteps
+    };
+  }
+
+  var api = {
+    mulberry32: mulberry32,
+    CORRIDOR_TERMINAL: CORRIDOR_TERMINAL,
+    P_STAR: P_STAR,
+    V_STAR: V_STAR,
+    LINE5_N: LINE5_N,
+    LINE5_TERMINAL: LINE5_TERMINAL,
+    corridorValueExact: corridorValueExact,
+    corridorValueLinear: corridorValueLinear,
+    corridorDv0Dp: corridorDv0Dp,
+    corridorStep: corridorStep,
+    corridorEpisode: corridorEpisode,
+    line5Step: line5Step,
+    softmaxProbRight: softmaxProbRight,
+    initThetaFromP: initThetaFromP,
+    runReinforce: runReinforce,
+    runReinforceLine5: runReinforceLine5,
+    baselineVarianceCheck: baselineVarianceCheck,
+    runActorCritic: runActorCritic,
+    traceEpisodeCompare: traceEpisodeCompare
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.PGSIM = api;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+(function () {
+'use strict';
+const S = window.PGSIM;
+const $ = (id) => document.getElementById(id);
+const kpi = (cls, v, l) => `<div class="kpi ${cls || ''}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+const fmt = (x, d) => (!isFinite(x) ? '&minus;&infin;' : x.toFixed(d == null ? 2 : d));
+const fmtSci = (x) => (!isFinite(x) ? '—' : Math.abs(x) >= 1e4 || (Math.abs(x) < 1e-2 && x !== 0) ? x.toExponential(1) : x.toFixed(Math.abs(x) >= 100 ? 0 : 1));
+
+if (window.mlViz) window.mlViz.initTheme('themeBtn');
+const seen = {};
+
+function seg(id, vals, cur, cb, label) {
+  const el = $(id);
+  el.innerHTML = vals.map((v) => `<button type="button" data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label ? label(v) : v}</button>`).join('');
+  el.querySelectorAll('button').forEach((b) => {
+    b.onclick = () => {
+      el.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      cb(b.dataset.v);
+    };
+  });
+}
+function setSegActive(id, val) {
+  const el = $(id);
+  if (!el) return;
+  el.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v) === String(val)));
+}
+
+/* =========================================================
+   TAB 1: Short Corridor with Switched Actions
+   ========================================================= */
+const P1 = { p: 0.59, seed: 17 };
+let w1 = null, t1 = null, rng1 = S.mulberry32(P1.seed);
+
+function resetWalker1(quiet) {
+  w1 = { s: 0, steps: 0, ret: 0, done: false, lastAction: null, lastFrom: null, switchedBounce: false, history: [0], mcN: 0, mcSum: 0 };
+  if (!quiet) draw1();
+}
+
+function stepWalker1() {
+  if (w1.done) {
+    w1.s = 0; w1.steps = 0; w1.ret = 0; w1.done = false; w1.lastAction = null; w1.lastFrom = null; w1.switchedBounce = false; w1.history = [0];
+  }
+  const aRight = rng1() < P1.p;
+  const from = w1.s;
+  const tr = S.corridorStep(from, aRight);
+  w1.lastFrom = from;
+  w1.lastAction = aRight ? 'right' : 'left';
+  w1.switchedBounce = (from === 1 && aRight);
+  w1.s = tr.nextState;
+  w1.steps++;
+  w1.ret += tr.reward;
+  w1.history.push(tr.nextState);
+  if (tr.done || w1.steps >= 500) {
+    w1.done = true;
+    w1.mcN++;
+    w1.mcSum += w1.ret;
+  }
+  draw1();
+}
+
+function stopPlay1() {
+  if (t1) { clearInterval(t1); t1 = null; $('b1Play').textContent = 'Play'; }
+}
+function play1() {
+  if (t1) { stopPlay1(); return; }
+  $('b1Play').textContent = 'Pause';
+  t1 = setInterval(() => {
+    stepWalker1();
+    if (w1.done) stopPlay1();
+  }, 360);
+}
+function finish1() {
+  stopPlay1();
+  if (w1.done) {
+    w1.s = 0; w1.steps = 0; w1.ret = 0; w1.done = false; w1.lastAction = null; w1.lastFrom = null; w1.switchedBounce = false; w1.history = [0];
+  }
+  while (!w1.done) {
+    const aRight = rng1() < P1.p;
+    const from = w1.s;
+    const tr = S.corridorStep(from, aRight);
+    w1.lastFrom = from; w1.lastAction = aRight ? 'right' : 'left'; w1.switchedBounce = (from === 1 && aRight);
+    w1.s = tr.nextState; w1.steps++; w1.ret += tr.reward; w1.history.push(tr.nextState);
+    if (tr.done || w1.steps >= 500) { w1.done = true; w1.mcN++; w1.mcSum += w1.ret; }
+  }
+  draw1();
+}
+function runMcBatch1() {
+  stopPlay1();
+  const batchRng = S.mulberry32((P1.seed + Math.round(P1.p * 10000) + w1.mcN * 31) >>> 0);
+  for (let i = 0; i < 500; i++) {
+    const ep = S.corridorEpisode(batchRng, P1.p, 1000);
+    w1.mcN++;
+    w1.mcSum += ep.totalReturn;
+  }
+  draw1();
+}
+
+function draw1Mdp() {
+  const p = P1.p, q = 1 - p, ex = S.corridorValueExact(p);
+  const xs = [110, 295, 480, 665], cy = 104, bw = 96, bh = 54;
+  let b = `<defs>
+    <marker id="arR" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--c-c)"/></marker>
+    <marker id="arL" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--c-a)"/></marker>
+  </defs>`;
+
+  // Arrows: s0 -> s1 (right, top), s0 -> s0 (left, self-loop left)
+  b += `<path d="M${xs[0] + bw / 2},${cy - 14} Q${(xs[0] + xs[1]) / 2},${cy - 54} ${xs[1] - bw / 2},${cy - 14}" fill="none" stroke="var(--c-c)" stroke-width="2.2" marker-end="url(#arR)"><title>s0 -> s1: right (p = ${p.toFixed(2)})</title></path>`;
+  b += `<text x="${(xs[0] + xs[1]) / 2}" y="${cy - 40}" text-anchor="middle" style="fill:var(--c-c);font-weight:600">right (${p.toFixed(2)})</text>`;
+
+  // Self-loop on s0 for left
+  b += `<path d="M${xs[0] - bw / 2},${cy - 10} C${xs[0] - bw / 2 - 44},${cy - 36} ${xs[0] - bw / 2 - 44},${cy + 36} ${xs[0] - bw / 2 - 2},${cy + 12}" fill="none" stroke="var(--c-a)" stroke-width="2" marker-end="url(#arL)"><title>s0 -> s0: left hits wall (1 - p = ${q.toFixed(2)})</title></path>`;
+  b += `<text x="${xs[0] - bw / 2 - 24}" y="${cy - 30}" text-anchor="middle" style="fill:var(--c-a)">left (${q.toFixed(2)})</text>`;
+
+  // s1 SWITCHED arrows: right goes BACK to s0 (bottom), left goes FORWARD to s2 (top)!
+  b += `<path d="M${xs[1] - bw / 2},${cy + 14} Q${(xs[0] + xs[1]) / 2},${cy + 56} ${xs[0] + bw / 2},${cy + 14}" fill="none" stroke="var(--c-c)" stroke-width="2.4" stroke-dasharray="5 3" marker-end="url(#arR)"><title>s1 -> s0 (SWITCHED!): right sends you BACK to s0 (p = ${p.toFixed(2)})</title></path>`;
+  b += `<text x="${(xs[0] + xs[1]) / 2}" y="${cy + 52}" text-anchor="middle" style="fill:var(--c-c);font-weight:600">right &larr; switched! (${p.toFixed(2)})</text>`;
+
+  b += `<path d="M${xs[1] + bw / 2},${cy - 14} Q${(xs[1] + xs[2]) / 2},${cy - 54} ${xs[2] - bw / 2},${cy - 14}" fill="none" stroke="var(--c-a)" stroke-width="2.4" stroke-dasharray="5 3" marker-end="url(#arL)"><title>s1 -> s2 (SWITCHED!): left advances to s2 (1 - p = ${q.toFixed(2)})</title></path>`;
+  b += `<text x="${(xs[1] + xs[2]) / 2}" y="${cy - 40}" text-anchor="middle" style="fill:var(--c-a);font-weight:600">left &rarr; switched! (${q.toFixed(2)})</text>`;
+
+  // s2 -> s1 (left, bottom) and s2 -> G (right, top)
+  b += `<path d="M${xs[2] - bw / 2},${cy + 14} Q${(xs[1] + xs[2]) / 2},${cy + 56} ${xs[1] + bw / 2},${cy + 14}" fill="none" stroke="var(--c-a)" stroke-width="2.2" marker-end="url(#arL)"><title>s2 -> s1: left moves back to s1 (1 - p = ${q.toFixed(2)})</title></path>`;
+  b += `<text x="${(xs[1] + xs[2]) / 2}" y="${cy + 52}" text-anchor="middle" style="fill:var(--c-a)">left (${q.toFixed(2)})</text>`;
+
+  b += `<path d="M${xs[2] + bw / 2},${cy - 10} Q${(xs[2] + xs[3]) / 2},${cy - 48} ${xs[3] - bw / 2},${cy - 10}" fill="none" stroke="var(--c-c)" stroke-width="2.2" marker-end="url(#arR)"><title>s2 -> Goal: right terminates episode (p = ${p.toFixed(2)})</title></path>`;
+  b += `<text x="${(xs[2] + xs[3]) / 2}" y="${cy - 36}" text-anchor="middle" style="fill:var(--c-c);font-weight:600">right (${p.toFixed(2)})</text>`;
+
+  // State boxes
+  const labels = [
+    { name: 's0', sub: 'start', v: ex.v0, fill: 'var(--surface-2)', stroke: 'var(--line)' },
+    { name: 's1', sub: 'SWITCHED', v: ex.v1, fill: 'color-mix(in srgb, var(--warn) 16%, var(--surface))', stroke: 'var(--warn)' },
+    { name: 's2', sub: 'normal', v: ex.v2, fill: 'var(--surface-2)', stroke: 'var(--line)' },
+    { name: 'Goal', sub: 'terminal', v: 0, fill: 'color-mix(in srgb, var(--good) 18%, var(--surface))', stroke: 'var(--good)' }
+  ];
+  labels.forEach((st, i) => {
+    const active = w1.s === i;
+    const sw = active ? 3 : 1.5;
+    const sc = active ? 'var(--ink)' : st.stroke;
+    const tip = i < 3
+      ? `State s${i} (${st.sub})\nExact value v(s${i}; p=${p.toFixed(2)}) = ${st.v.toFixed(2)}`
+      : `Terminal Goal G (value = 0)`;
+    b += `<g class="hit"><title>${tip}</title>`;
+    b += `<rect x="${xs[i] - bw / 2}" y="${cy - bh / 2}" width="${bw}" height="${bh}" rx="10" fill="${st.fill}" stroke="${sc}" stroke-width="${sw}"/>`;
+    b += `<text x="${xs[i]}" y="${cy - 4}" text-anchor="middle" class="lbl-strong" style="font-size:13px">${st.name}</text>`;
+    b += `<text x="${xs[i]}" y="${cy + 13}" text-anchor="middle" style="font-size:10px;fill:${i === 1 ? 'var(--warn)' : i === 3 ? 'var(--good)' : 'var(--muted)'};font-weight:${i === 1 || i === 3 ? 700 : 500}">${st.sub}</text>`;
+    b += `<text class="num" x="${xs[i]}" y="${cy + bh / 2 + 16}" text-anchor="middle">v = ${i < 3 ? st.v.toFixed(1) : '0.0'}</text>`;
+    b += `</g>`;
+  });
+
+  // Live walker marker
+  const wx = xs[w1.s];
+  b += `<g><title>Agent currently in ${w1.s === 3 ? 'Goal' : 's' + w1.s} (step ${w1.steps})</title>`;
+  b += `<circle cx="${wx}" cy="${cy - bh / 2 - 14}" r="9" fill="${w1.done ? 'var(--good)' : w1.switchedBounce ? 'var(--bad)' : 'var(--ink)'}"/>`;
+  b += `<path d="M${wx - 5},${cy - bh / 2 - 7} L${wx + 5},${cy - bh / 2 - 7} L${wx},${cy - bh / 2 - 1} Z" fill="${w1.done ? 'var(--good)' : w1.switchedBounce ? 'var(--bad)' : 'var(--ink)'}"/>`;
+  b += `</g>`;
+
+  $('c1mdp').innerHTML = b;
+}
+
+function draw1Curve() {
+  const W = 760, H = 300, m = { l: 56, r: 22, t: 24, b: 42 };
+  const yMin = -95, yMax = -5;
+  const sx = (p) => m.l + p * (W - m.l - m.r);
+  const sy = (v) => m.t + (1 - (Math.max(yMin, Math.min(yMax, v)) - yMin) / (yMax - yMin)) * (H - m.t - m.b);
+  let b = '';
+
+  [-90, -70, -50, -30, -11.66].forEach((v) => {
+    const isOpt = Math.abs(v + 11.66) < 0.1;
+    b += `<line class="${isOpt ? '' : 'grid-l'}" x1="${m.l}" x2="${W - m.r}" y1="${sy(v)}" y2="${sy(v)}" ${isOpt ? 'stroke="var(--good)" stroke-dasharray="5 4" opacity="0.7"' : ''}/>`;
+    b += `<text x="${m.l - 7}" y="${sy(v) + 4}" text-anchor="end" style="${isOpt ? 'fill:var(--good);font-weight:700' : ''}">${isOpt ? '&minus;11.7' : '&minus;' + Math.abs(v)}</text>`;
+  });
+  [0, 0.2, 0.4, 0.6, 0.8, 1.0].forEach((p) => {
+    b += `<line class="grid-l" x1="${sx(p)}" x2="${sx(p)}" y1="${m.t}" y2="${H - m.b}"/>`;
+    b += `<text x="${sx(p)}" y="${H - m.b + 16}" text-anchor="middle">${p.toFixed(1)}</text>`;
+  });
+  b += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
+  b += `<line class="axis" x1="${m.l}" x2="${m.l}" y1="${m.t}" y2="${H - m.b}"/>`;
+  b += `<text x="${(m.l + W - m.r) / 2}" y="${H - 6}" text-anchor="middle">probability of right action, p = &pi;(right)</text>`;
+  b += `<text x="6" y="14" class="lbl-strong">v(s0; p)</text>`;
+
+  // Analytical curve points
+  const pts = [];
+  for (let i = 4; i <= 96; i++) {
+    const p = i / 100;
+    const v = S.corridorValueExact(p).v0;
+    if (v >= yMin) pts.push([p, v]);
+  }
+  b += `<path d="${pts.map(([p, v], i) => `${i ? 'L' : 'M'}${sx(p).toFixed(1)},${sy(v).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--c-c)" stroke-width="2.8" stroke-linejoin="round"/>`;
+
+  // Hoverable invisible hit targets along the curve
+  for (let p = 0.05; p <= 0.955; p += 0.05) {
+    const v = S.corridorValueExact(p).v0;
+    b += `<circle class="hit" cx="${sx(p).toFixed(1)}" cy="${sy(v).toFixed(1)}" r="8" fill="transparent"><title>p(right) = ${p.toFixed(2)}\nExact v(s0) = ${v.toFixed(2)}</title></circle>`;
+  }
+
+  // Optimal marker p* = 2 - sqrt(2)
+  const pOpt = S.P_STAR, vOpt = S.V_STAR;
+  b += `<line x1="${sx(pOpt)}" x2="${sx(pOpt)}" y1="${sy(vOpt)}" y2="${H - m.b}" stroke="var(--good)" stroke-dasharray="4 3"/>`;
+  b += `<circle class="hit" cx="${sx(pOpt)}" cy="${sy(vOpt)}" r="6" fill="var(--good)" stroke="var(--surface)" stroke-width="2"><title>Optimal stochastic policy\np* = 2 - sqrt(2) = ${pOpt.toFixed(4)}\nv*(s0) = -(6 + 4*sqrt(2)) = ${vOpt.toFixed(2)}</title></circle>`;
+  b += `<text x="${sx(pOpt) + 10}" y="${sy(vOpt) + 4}" style="fill:var(--good);font-weight:700">p* &approx; 0.586 (v* &approx; &minus;11.66)</text>`;
+
+  // Epsilon-greedy markers (p = 0.05 and p = 0.95)
+  const vL = S.corridorValueExact(0.05).v0, vR = S.corridorValueExact(0.95).v0;
+  b += `<circle class="hit" cx="${sx(0.05)}" cy="${sy(vL)}" r="5.5" fill="var(--bad)" stroke="var(--surface)" stroke-width="1.8"><title>epsilon-greedy left (eps=0.1, p=0.05)\nv(s0) = ${vL.toFixed(2)}</title></circle>`;
+  b += `<text x="${sx(0.05) + 10}" y="${sy(vL) + 4}" style="fill:var(--bad);font-weight:600">&epsilon;-greedy left (&minus;82.1)</text>`;
+  b += `<circle class="hit" cx="${sx(0.95)}" cy="${sy(vR)}" r="5.5" fill="var(--bad)" stroke="var(--surface)" stroke-width="1.8"><title>epsilon-greedy right (eps=0.1, p=0.95)\nv(s0) = ${vR.toFixed(2)}</title></circle>`;
+  b += `<text x="${sx(0.95) - 10}" y="${sy(vR) + 4}" text-anchor="end" style="fill:var(--bad);font-weight:600">&epsilon;-greedy right (&minus;44.2)</text>`;
+
+  // Current user slider p
+  const curV = S.corridorValueExact(P1.p).v0;
+  b += `<line x1="${sx(P1.p)}" x2="${sx(P1.p)}" y1="${m.t}" y2="${H - m.b}" stroke="var(--c-a)" stroke-width="1.6" opacity="0.7"/>`;
+  b += `<circle class="hit" cx="${sx(P1.p)}" cy="${sy(curV)}" r="7" fill="var(--c-a)" stroke="var(--ink)" stroke-width="2"><title>Your selected p = ${P1.p.toFixed(2)}\nExact v(s0) = ${curV.toFixed(2)}\nGap to v* = ${(curV - vOpt).toFixed(2)}</title></circle>`;
+
+  // MC average dot if episodes have been simulated
+  if (w1.mcN > 0) {
+    const mcAvg = w1.mcSum / w1.mcN;
+    b += `<circle class="hit" cx="${sx(P1.p)}" cy="${sy(mcAvg)}" r="4.5" fill="var(--ink)" stroke="var(--surface)" stroke-width="1.5"><title>Empirical MC mean over ${w1.mcN} episodes: ${mcAvg.toFixed(2)}</title></circle>`;
+  }
+
+  $('c1curve').innerHTML = b;
+}
+
+function draw1() {
+  const ex = S.corridorValueExact(P1.p);
+  const dvdp = S.corridorDv0Dp(P1.p);
+  draw1Mdp();
+  draw1Curve();
+
+  $('walkState').textContent = w1.done
+    ? `Episode finished in ${w1.steps} steps (return ${w1.ret})`
+    : `Current state: s${w1.s} • step ${w1.steps}`;
+
+  if (w1.lastAction == null) {
+    $('stepline1').innerHTML = `Ready in <b>s<sub>0</sub></b> with p(right) = <b>${P1.p.toFixed(2)}</b>. Press <b>Step</b> or <b>Play</b> to watch the agent try to cross the switched state <b>s<sub>1</sub></b>.`;
+  } else {
+    const toLbl = w1.s === 3 ? '<b>Goal G</b>' : `<b>s<sub>${w1.s}</sub></b>`;
+    const swNote = w1.lastFrom === 1
+      ? (w1.lastAction === 'right' ? ' <span style="color:var(--bad);font-weight:700">(switched! bounced back to s<sub>0</sub>)</span>' : ' <span style="color:var(--good);font-weight:700">(switched! left advanced to s<sub>2</sub>)</span>')
+      : '';
+    const doneNote = w1.done ? `<br><b>Episode finished!</b> Total return G<sub>0</sub> = <b>${w1.ret}</b> (${w1.steps} steps). Press Step for another episode.` : '';
+    $('stepline1').innerHTML = `<b>step ${w1.steps}</b>: s<sub>${w1.lastFrom}</sub> &mdash;[${w1.lastAction}]&rarr; ${toLbl}${swNote}, R = &minus;1, return so far = <b>${w1.ret}</b>.${doneNote}`;
+  }
+
+  const mcStr = w1.mcN > 0 ? `${(w1.mcSum / w1.mcN).toFixed(2)}` : '&mdash;';
+  $('k1').innerHTML =
+    kpi('c', ex.v0.toFixed(2), `exact v(s0; p = ${P1.p.toFixed(2)})`) +
+    kpi('b', S.V_STAR.toFixed(2), `optimal v* at p* = ${S.P_STAR.toFixed(3)}`) +
+    kpi('a', w1.steps ? `${w1.ret}` : '&mdash;', `current episode return (${w1.steps} steps)`) +
+    kpi('', mcStr, `MC mean return (${w1.mcN} finished eps)`);
+
+  let msg;
+  if (P1.p < 0.15) {
+    msg = `<b>Trapped near &epsilon;-greedy left (p = ${P1.p.toFixed(2)}).</b> Because the agent rarely goes right, it keeps banging into the left wall at s<sub>0</sub>. Exact value is <b>${ex.v0.toFixed(1)}</b> &mdash; over 7&times; worse than the stochastic optimum (${S.V_STAR.toFixed(1)}). Gradient dv<sub>0</sub>/dp = <b>+${dvdp.toFixed(1)}</b>, strongly pushing p upward.`;
+  } else if (P1.p > 0.85) {
+    msg = `<b>Trapped near &epsilon;-greedy right (p = ${P1.p.toFixed(2)}).</b> Now the agent escapes s<sub>0</sub> immediately, only to hit s<sub>1</sub> where <i>right</i> sends it straight back to s<sub>0</sub>! It pings between s<sub>0</sub> and s<sub>1</sub> until a rare left action breaks through. Exact value is <b>${ex.v0.toFixed(1)}</b>, and dv<sub>0</sub>/dp = <b>${dvdp.toFixed(1)}</b> pushes p back down toward 0.59.`;
+  } else if (Math.abs(P1.p - S.P_STAR) < 0.05) {
+    msg = `<b>Near the interior stochastic optimum!</b> At p* = 2 &minus; &radic;2 &approx; 0.586, the agent balances escaping s<sub>0</sub> &amp; s<sub>2</sub> (needs right) against crossing switched s<sub>1</sub> (needs left). Exact values: v(s<sub>0</sub>) = ${ex.v0.toFixed(2)}, v(s<sub>1</sub>) = ${ex.v1.toFixed(2)}, v(s<sub>2</sub>) = ${ex.v2.toFixed(2)}. No deterministic policy can ever reach this peak.`;
+  } else {
+    msg = `<b>Stochastic interior (p = ${P1.p.toFixed(2)}).</b> Exact values: v(s<sub>0</sub>) = ${ex.v0.toFixed(2)}, v(s<sub>1</sub>) = ${ex.v1.toFixed(2)}, v(s<sub>2</sub>) = ${ex.v2.toFixed(2)}. Policy gradient slope dv<sub>0</sub>/dp = <b>${dvdp >= 0 ? '+' : ''}${dvdp.toFixed(2)}</b> (${dvdp > 0 ? 'increasing p improves return' : 'decreasing p improves return'}).`;
+  }
+  $('n1').innerHTML = msg;
+}
+
+seg('sP', ['0.05', '0.50', '0.59', '0.95'], '0.59', (v) => {
+  stopPlay1();
+  P1.p = +v;
+  $('rP').value = P1.p;
+  $('vP').textContent = P1.p.toFixed(2);
+  resetWalker1(true);
+  draw1();
+}, (v) => ({ '0.05': 'ε-greedy L (0.05)', '0.50': '50/50', '0.59': 'optimal (0.59)', '0.95': 'ε-greedy R (0.95)' }[v]));
+
+$('rP').oninput = (e) => {
+  stopPlay1();
+  P1.p = +e.target.value;
+  $('vP').textContent = P1.p.toFixed(2);
+  setSegActive('sP', P1.p.toFixed(2));
+  resetWalker1(true);
+  draw1();
+};
+$('b1New').onclick = () => { stopPlay1(); resetWalker1(false); };
+$('b1Step').onclick = () => { stopPlay1(); stepWalker1(); };
+$('b1Play').onclick = play1;
+$('b1Fin').onclick = finish1;
+$('b1Mc').onclick = runMcBatch1;
+resetWalker1(true);
+draw1();
+
+/* =========================================================
+   TAB 2: REINFORCE with & without learned baseline
+   ========================================================= */
+const AT_POWS = [-13, -12, -11, -10, -9, -8];
+const AW_POWS = [-8, -7, -6, -5];
+const P2 = { atPow: -9, awPow: -6, runs: 25, episodes: 1000, seed: 42 };
+let res2 = null, sweep2Token = 0, sweep2Rows = null;
+
+function powLabel(p) { return `2<sup>${p}</sup>`; }
+function powText(p) { return `2^${p}`; }
+
+seg('s2At', AT_POWS, P2.atPow, (v) => { P2.atPow = +v; runTab2(false); }, (v) => powLabel(v));
+seg('s2Aw', AW_POWS, P2.awPow, (v) => { P2.awPow = +v; runTab2(true); }, (v) => powLabel(v));
+seg('s2Runs', [20, 25, 50], P2.runs, (v) => { P2.runs = +v; runTab2(true); });
+seg('s2Eps', [500, 1000], P2.episodes, (v) => { P2.episodes = +v; runTab2(true); });
+$('b2Seed').onclick = () => { P2.seed += 7; runTab2(true); };
+
+function smoothSeries(arr, win) {
+  const n = arr.length, out = new Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum += arr[i];
+    if (i >= win) sum -= arr[i - win];
+    out[i] = sum / Math.min(i + 1, win);
+  }
+  return out;
+}
+
+function runTab2(rerunSweep) {
+  const t0 = performance.now();
+  const alphaTheta = Math.pow(2, P2.atPow);
+  const alphaW = Math.pow(2, P2.awPow);
+  const noBase = S.runReinforce({ alphaTheta, alphaW, useBaseline: false, episodes: P2.episodes, runs: P2.runs, seed: P2.seed });
+  const withBase = S.runReinforce({ alphaTheta, alphaW, useBaseline: true, episodes: P2.episodes, runs: P2.runs, seed: P2.seed });
+  const unbiased = S.baselineVarianceCheck({ p: 0.35, episodes: 3000, seed: P2.seed });
+  res2 = { noBase, withBase, unbiased };
+  $('msg2').textContent = `seed ${P2.seed}, ${P2.runs} runs × ${P2.episodes} eps (${Math.round(performance.now() - t0)} ms)`;
+  drawTab2();
+  if (rerunSweep || !sweep2Rows) runSweep2();
+  else renderTable2();
+}
+
+function drawTab2() {
+  const { noBase, withBase, unbiased } = res2;
+  const eps = P2.episodes;
+
+  // Chart 2a: Return learning curves
+  const W = 540, H = 310, m = { l: 50, r: 16, t: 22, b: 40 };
+  const yMin = -90, yMax = -5;
+  const sx = (e) => m.l + (e / (eps - 1)) * (W - m.l - m.r);
+  const sy = (v) => m.t + (1 - (Math.max(yMin, Math.min(yMax, v)) - yMin) / (yMax - yMin)) * (H - m.t - m.b);
+
+  let b = '';
+  [-90, -70, -50, -30, -11.66].forEach((v) => {
+    const isOpt = Math.abs(v + 11.66) < 0.1;
+    b += `<line class="${isOpt ? '' : 'grid-l'}" x1="${m.l}" x2="${W - m.r}" y1="${sy(v)}" y2="${sy(v)}" ${isOpt ? 'stroke="var(--ink)" stroke-dasharray="5 4" opacity="0.65"' : ''}/>`;
+    b += `<text x="${m.l - 6}" y="${sy(v) + 4}" text-anchor="end">${isOpt ? '&minus;11.7' : '&minus;' + Math.abs(v)}</text>`;
+  });
+  [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
+    const e = Math.round(f * (eps - 1));
+    b += `<text x="${sx(e)}" y="${H - m.b + 16}" text-anchor="middle">${Math.round(f * eps)}</text>`;
+  });
+  b += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
+  b += `<text x="${(m.l + W - m.r) / 2}" y="${H - 5}" text-anchor="middle">episodes</text>`;
+  b += `<text x="6" y="12" class="lbl-strong">avg return</text>`;
+
+  const stride = Math.max(1, Math.floor(eps / 140));
+  const idxs = [];
+  for (let e = 0; e < eps; e += stride) idxs.push(e);
+  if (idxs[idxs.length - 1] !== eps - 1) idxs.push(eps - 1);
+
+  const smNo = smoothSeries(noBase.meanReturn, 15);
+  const smYes = smoothSeries(withBase.meanReturn, 15);
+  const q25No = smoothSeries(noBase.q25Return, 15), q75No = smoothSeries(noBase.q75Return, 15);
+  const q25Yes = smoothSeries(withBase.q25Return, 15), q75Yes = smoothSeries(withBase.q75Return, 15);
+
+  const bandPath = (lo, hi) =>
+    idxs.map((e, i) => `${i ? 'L' : 'M'}${sx(e).toFixed(1)},${sy(hi[e]).toFixed(1)}`).join(' ') + ' ' +
+    idxs.slice().reverse().map((e) => `L${sx(e).toFixed(1)},${sy(lo[e]).toFixed(1)}`).join(' ') + ' Z';
+  const linePath = (arr) => idxs.map((e, i) => `${i ? 'L' : 'M'}${sx(e).toFixed(1)},${sy(arr[e]).toFixed(1)}`).join(' ');
+
+  b += `<path d="${bandPath(q25No, q75No)}" fill="var(--c-a)" opacity="0.14"/>`;
+  b += `<path d="${bandPath(q25Yes, q75Yes)}" fill="var(--c-b)" opacity="0.16"/>`;
+  b += `<path d="${linePath(smNo)}" fill="none" stroke="var(--c-a)" stroke-width="2.4" stroke-linejoin="round"/>`;
+  b += `<path d="${linePath(smYes)}" fill="none" stroke="var(--c-b)" stroke-width="2.6" stroke-linejoin="round"/>`;
+
+  // Hover checkpoints
+  for (let k = 0; k <= 10; k++) {
+    const e = Math.min(eps - 1, Math.round(k * (eps - 1) / 10));
+    b += `<circle class="hit" cx="${sx(e).toFixed(1)}" cy="${sy(smYes[e]).toFixed(1)}" r="6" fill="transparent"><title>Episode ${e + 1}\nREINFORCE + baseline: ${smYes[e].toFixed(1)} (p=${withBase.meanP[e].toFixed(2)})\nREINFORCE no baseline: ${smNo[e].toFixed(1)} (p=${noBase.meanP[e].toFixed(2)})</title></circle>`;
+    b += `<circle class="hit" cx="${sx(e).toFixed(1)}" cy="${sy(smNo[e]).toFixed(1)}" r="6" fill="transparent"><title>Episode ${e + 1}\nREINFORCE no baseline: ${smNo[e].toFixed(1)} (p=${noBase.meanP[e].toFixed(2)})\nREINFORCE + baseline: ${smYes[e].toFixed(1)} (p=${withBase.meanP[e].toFixed(2)})</title></circle>`;
+  }
+  $('c2a').innerHTML = b;
+
+  // Chart 2b: Gradient variance across episodes (log10 scale)
+  const W2 = 420, H2 = 310, m2 = { l: 50, r: 16, t: 22, b: 40 };
+  const smVarNo = smoothSeries(noBase.gradVar, 20);
+  const smVarYes = smoothSeries(withBase.gradVar, 20);
+  let loLog = 0, hiLog = 6;
+  const allLogs = [];
+  idxs.forEach((e) => {
+    if (smVarNo[e] > 0) allLogs.push(Math.log10(smVarNo[e]));
+    if (smVarYes[e] > 0) allLogs.push(Math.log10(smVarYes[e]));
+  });
+  if (allLogs.length) {
+    loLog = Math.floor(Math.min(...allLogs));
+    hiLog = Math.ceil(Math.max(...allLogs));
+    if (hiLog - loLog < 2) hiLog = loLog + 2;
+  }
+  const sx2 = (e) => m2.l + (e / (eps - 1)) * (W2 - m2.l - m2.r);
+  const sy2 = (v) => {
+    const lv = Math.log10(Math.max(1e-2, v));
+    return m2.t + (1 - (Math.max(loLog, Math.min(hiLog, lv)) - loLog) / (hiLog - loLog)) * (H2 - m2.t - m2.b);
+  };
+  let c = '';
+  for (let p = loLog; p <= hiLog; p++) {
+    const val = Math.pow(10, p);
+    c += `<line class="grid-l" x1="${m2.l}" x2="${W2 - m2.r}" y1="${sy2(val)}" y2="${sy2(val)}"/>`;
+    c += `<text x="${m2.l - 6}" y="${sy2(val) + 4}" text-anchor="end">10^${p}</text>`;
+  }
+  [0, 0.5, 1].forEach((f) => {
+    const e = Math.round(f * (eps - 1));
+    c += `<text x="${sx2(e)}" y="${H2 - m2.b + 16}" text-anchor="middle">${Math.round(f * eps)}</text>`;
+  });
+  c += `<line class="axis" x1="${m2.l}" x2="${W2 - m2.r}" y1="${H2 - m2.b}" y2="${H2 - m2.b}"/>`;
+  c += `<text x="${(m2.l + W2 - m2.r) / 2}" y="${H2 - 5}" text-anchor="middle">episodes</text>`;
+  c += `<text x="6" y="12" class="lbl-strong">Var[&Delta;&theta;<sub>ep</sub>]</text>`;
+
+  const vPath = (arr) => idxs.map((e, i) => `${i ? 'L' : 'M'}${sx2(e).toFixed(1)},${sy2(arr[e]).toFixed(1)}`).join(' ');
+  c += `<path d="${vPath(smVarNo)}" fill="none" stroke="var(--c-a)" stroke-width="2.4"/>`;
+  c += `<path d="${vPath(smVarYes)}" fill="none" stroke="var(--c-b)" stroke-width="2.6"/>`;
+  for (let k = 0; k <= 8; k++) {
+    const e = Math.min(eps - 1, Math.round(k * (eps - 1) / 8));
+    c += `<circle class="hit" cx="${sx2(e).toFixed(1)}" cy="${sy2(smVarNo[e]).toFixed(1)}" r="6" fill="transparent"><title>Episode ${e + 1}\nNo-baseline grad variance: ${fmtSci(smVarNo[e])}\nWith-baseline grad variance: ${fmtSci(smVarYes[e])}</title></circle>`;
+    c += `<circle class="hit" cx="${sx2(e).toFixed(1)}" cy="${sy2(smVarYes[e]).toFixed(1)}" r="6" fill="transparent"><title>Episode ${e + 1}\nWith-baseline grad variance: ${fmtSci(smVarYes[e])}\nNo-baseline grad variance: ${fmtSci(smVarNo[e])}</title></circle>`;
+  }
+  $('c2b').innerHTML = c;
+
+  // Unbiasedness check caption
+  const u0 = unbiased.results[0], u1 = unbiased.results[1];
+  $('unbiased2').innerHTML = `<b>Unbiasedness check</b> at fixed p = 0.35 (3,000 eps, true grad = <b>+${unbiased.trueGrad.toFixed(2)}</b>): b = 0 gives mean <b>+${u0.mean.toFixed(2)}</b> (Var ${u0.variance.toFixed(0)}); b = v(s<sub>0</sub>) gives mean <b>+${u1.mean.toFixed(2)}</b> (Var <b>${u1.variance.toFixed(0)}</b>, ${(u0.variance / u1.variance).toFixed(1)}&times; smaller).`;
+
+  // KPIs
+  const ratio = noBase.meanGradVar / Math.max(1e-9, withBase.meanGradVar);
+  const finalW = withBase.meanBaseline[eps - 1];
+  $('k2').innerHTML =
+    kpi('b', withBase.finalReturn.toFixed(2), `REINFORCE + baseline final return (v* = ${S.V_STAR.toFixed(2)})`) +
+    kpi('a', noBase.finalReturn.toFixed(2), `REINFORCE no-baseline final return`) +
+    kpi('c', `${ratio >= 10 ? ratio.toFixed(0) : ratio.toFixed(1)}&times;`, 'gradient variance reduction (no-base / +base)') +
+    kpi('', finalW.toFixed(2), 'final learned baseline w');
+
+  $('n2').innerHTML = `<b>Why subtracting a baseline works.</b> At &alpha;<sub>&theta;</sub> = ${powLabel(P2.atPow)}, REINFORCE with baseline reaches <b>${withBase.finalReturn.toFixed(2)}</b> (p &approx; ${withBase.finalP.toFixed(3)}) with <b>${ratio >= 10 ? ratio.toFixed(0) : ratio.toFixed(1)}&times; lower gradient variance</b> than plain REINFORCE (final return <b>${noBase.finalReturn.toFixed(2)}</b>). Because G<sub>t</sub> is always negative in the Short Corridor, plain REINFORCE pushes <i>down</i> on every action it takes &mdash; hoping bad actions get pushed down harder than good ones. Subtracting the running value estimate w &approx; ${finalW.toFixed(1)} centers the advantage (G<sub>t</sub> &minus; w) around zero so better-than-average trajectories reinforce their actions and worse-than-average ones suppress them.`;
+}
+
+function runSweep2() {
+  const tok = ++sweep2Token;
+  const alphaW = Math.pow(2, P2.awPow);
+  const rows = [];
+  let idx = 0;
+  $('prog2').hidden = false;
+  $('prog2').firstElementChild.style.width = '0%';
+  $('sweep2Msg').textContent = 'running sweep...';
+
+  function step() {
+    if (tok !== sweep2Token) return;
+    const p = AT_POWS[idx];
+    const at = Math.pow(2, p);
+    const noB = S.runReinforce({ alphaTheta: at, alphaW, useBaseline: false, episodes: P2.episodes, runs: P2.runs, seed: P2.seed });
+    const withB = S.runReinforce({ alphaTheta: at, alphaW, useBaseline: true, episodes: P2.episodes, runs: P2.runs, seed: P2.seed });
+    const epEarly = Math.min(P2.episodes - 1, 199);
+    rows.push({
+      pow: p,
+      earlyNo: noB.meanReturn[epEarly],
+      earlyYes: withB.meanReturn[epEarly],
+      finalNo: noB.finalReturn,
+      finalYes: withB.finalReturn,
+      varNo: noB.meanGradVar,
+      varYes: withB.meanGradVar
+    });
+    idx++;
+    $('prog2').firstElementChild.style.width = (idx / AT_POWS.length * 100) + '%';
+    if (idx < AT_POWS.length) setTimeout(step, 0);
+    else {
+      sweep2Rows = rows;
+      $('prog2').hidden = true;
+      $('sweep2Msg').textContent = `${P2.runs} runs × ${P2.episodes} eps, α_w = 2^${P2.awPow}`;
+      renderTable2();
+    }
+  }
+  setTimeout(step, 0);
+}
+
+function renderTable2() {
+  if (!sweep2Rows) return;
+  const bestNo = Math.max(...sweep2Rows.map((r) => r.finalNo));
+  const bestYes = Math.max(...sweep2Rows.map((r) => r.finalYes));
+  $('tbl2').innerHTML = `<table class="t"><thead><tr>
+    <th class="l">&alpha;<sub>&theta;</sub></th>
+    <th>ep 200 (no base)</th>
+    <th>ep 200 (+base)</th>
+    <th>final (no base)</th>
+    <th>final (+base)</th>
+    <th>grad Var (no base)</th>
+    <th>grad Var (+base)</th>
+    <th>Var drop</th>
+  </tr></thead><tbody>` +
+  sweep2Rows.map((r) => {
+    const sel = r.pow === P2.atPow ? ' class="sel"' : '';
+    const drop = r.varNo / Math.max(1e-9, r.varYes);
+    return `<tr${sel}>
+      <td class="l mono">${powLabel(r.pow)}</td>
+      <td>${r.earlyNo.toFixed(1)}</td>
+      <td>${r.earlyYes.toFixed(1)}</td>
+      <td class="${r.finalNo >= bestNo - 0.15 ? 'good' : r.finalNo < -20 ? 'bad' : ''}">${r.finalNo.toFixed(2)}</td>
+      <td class="${r.finalYes >= bestYes - 0.15 ? 'good' : r.finalYes < -20 ? 'bad' : ''}">${r.finalYes.toFixed(2)}</td>
+      <td class="mono">${fmtSci(r.varNo)}</td>
+      <td class="mono">${fmtSci(r.varYes)}</td>
+      <td class="good">${drop >= 10 ? drop.toFixed(0) : drop.toFixed(1)}&times;</td>
+    </tr>`;
+  }).join('') + `</tbody></table>`;
+}
+
+/* =========================================================
+   TAB 3: Actor-Critic vs REINFORCE
+   ========================================================= */
+const ENV_PRESETS = {
+  corridor_tab: { env: 'corridor', criticMode: 'tabular', alphaTheta: 0.015, alphaW: 0.10, episodes: 500, opt: S.V_STAR, label: 'Short Corridor (state-aware critic)' },
+  corridor_ali: { env: 'corridor', criticMode: 'aliased', alphaTheta: 0.015, alphaW: 0.10, episodes: 500, opt: S.V_STAR, label: 'Short Corridor (aliased critic)' },
+  line5:        { env: 'line5',    criticMode: 'tabular', alphaTheta: 0.12,  alphaW: 0.25, episodes: 250, opt: -5.0,     label: '5-state corridor (distinct states)' }
+};
+const P3 = { mode: 'corridor_tab', alphaTheta: 0.015, alphaW: 0.10, gamma: 1.0, runs: 25, seed: 42, traceSeed: 19 };
+let tr3 = null, trStep = 0, t3Timer = null, res3 = null;
+
+seg('s3Env', ['corridor_tab', 'corridor_ali', 'line5'], P3.mode, (v) => {
+  stopPlay3();
+  P3.mode = v;
+  const pr = ENV_PRESETS[v];
+  P3.alphaTheta = pr.alphaTheta;
+  P3.alphaW = pr.alphaW;
+  $('r3At').value = P3.alphaTheta; $('v3At').textContent = P3.alphaTheta.toFixed(3);
+  $('r3Aw').value = P3.alphaW; $('v3Aw').textContent = P3.alphaW.toFixed(2);
+  buildTrace3();
+  runTab3();
+}, (v) => ENV_PRESETS[v].label);
+
+seg('s3Runs', [20, 25, 40], P3.runs, (v) => { P3.runs = +v; runTab3(); });
+$('r3At').oninput = (e) => { P3.alphaTheta = +e.target.value; $('v3At').textContent = P3.alphaTheta.toFixed(3); buildTrace3(); runTab3(); };
+$('r3Aw').oninput = (e) => { P3.alphaW = +e.target.value; $('v3Aw').textContent = P3.alphaW.toFixed(2); buildTrace3(); runTab3(); };
+$('r3Gam').oninput = (e) => { P3.gamma = +e.target.value; $('v3Gam').textContent = P3.gamma.toFixed(2); buildTrace3(); runTab3(); };
+$('b3Seed').onclick = () => { P3.seed += 5; P3.traceSeed += 3; buildTrace3(); runTab3(); };
+
+function stopPlay3() {
+  if (t3Timer) { clearInterval(t3Timer); t3Timer = null; $('b3Play').textContent = 'Play'; }
+}
+function buildTrace3() {
+  stopPlay3();
+  const pr = ENV_PRESETS[P3.mode];
+  // Pick a seed that finishes within 22 steps so the step-by-step timeline is super clear
+  let chosen = null;
+  for (let tries = 0; tries < 25; tries++) {
+    const cand = S.traceEpisodeCompare({
+      env: pr.env, criticMode: pr.criticMode,
+      alphaTheta: Math.max(0.03, P3.alphaTheta), alphaW: P3.alphaW, gamma: P3.gamma,
+      seed: P3.traceSeed + tries, maxSteps: 28
+    });
+    if (cand.done && cand.steps >= 5 && cand.steps <= 18) { chosen = cand; break; }
+    if (!chosen || (cand.done && cand.steps < chosen.steps)) chosen = cand;
+  }
+  tr3 = chosen;
+  trStep = 1;
+  drawTrace3();
+}
+function stepTrace3() {
+  if (!tr3) return;
+  if (trStep < tr3.steps) trStep++;
+  else trStep = 1;
+  drawTrace3();
+}
+function playTrace3() {
+  if (t3Timer) { stopPlay3(); return; }
+  if (trStep >= tr3.steps) trStep = 0;
+  $('b3Play').textContent = 'Pause';
+  t3Timer = setInterval(() => {
+    if (trStep < tr3.steps) { trStep++; drawTrace3(); }
+    else stopPlay3();
+  }, 450);
+}
+$('b3Step').onclick = () => { stopPlay3(); stepTrace3(); };
+$('b3Play').onclick = playTrace3;
+$('b3Fin').onclick = () => { stopPlay3(); trStep = tr3.steps; drawTrace3(); };
+$('b3NewEp').onclick = () => { P3.traceSeed += 11; buildTrace3(); };
+
+function drawTrace3() {
+  if (!tr3) return;
+  const W = 760, nS = tr3.nStates, T = tr3.steps;
+  const curIdx = Math.max(0, Math.min(T - 1, trStep - 1));
+  const cur = tr3.acSteps[curIdx];
+  const epDone = trStep >= T;
+
+  let b = '';
+  // Top row: state strip with live critic v(s)
+  const totalBoxes = nS + 1;
+  const padX = 52, gap = 16, bw = Math.min(110, (W - 2 * padX - gap * (totalBoxes - 1)) / totalBoxes);
+  const startX = (W - (bw * totalBoxes + gap * (totalBoxes - 1))) / 2;
+  const topY = 26, bh = 44;
+
+  for (let i = 0; i < totalBoxes; i++) {
+    const x = startX + i * (bw + gap);
+    const isGoal = i === nS;
+    const isSw = tr3.env === 'corridor' && i === 1;
+    const isAgent = (epDone && isGoal) || (!epDone && cur.nextState === i);
+    const vVal = isGoal ? 0 : (cur.wSnap.length === 1 ? cur.wSnap[0] : cur.wSnap[i]);
+    const fill = isGoal ? 'color-mix(in srgb, var(--good) 18%, var(--surface))'
+      : isSw ? 'color-mix(in srgb, var(--warn) 15%, var(--surface))' : 'var(--surface-2)';
+    const stroke = isAgent ? 'var(--ink)' : isGoal ? 'var(--good)' : isSw ? 'var(--warn)' : 'var(--line)';
+    const tip = isGoal
+      ? 'Terminal Goal G (v = 0)'
+      : `State s${i}${isSw ? ' (switched actions)' : ''}\nCritic estimate v(s${i}) = ${vVal.toFixed(2)}${cur.wSnap.length === 1 ? ' (shared aliased weight w)' : ''}`;
+    b += `<g class="hit"><title>${tip}</title>`;
+    b += `<rect x="${x.toFixed(1)}" y="${topY}" width="${bw.toFixed(1)}" height="${bh}" rx="9" fill="${fill}" stroke="${stroke}" stroke-width="${isAgent ? 2.8 : 1.4}"/>`;
+    b += `<text x="${(x + bw / 2).toFixed(1)}" y="${topY + 18}" text-anchor="middle" class="lbl-strong">${isGoal ? 'Goal' : 's' + i}${isSw ? '*' : ''}</text>`;
+    b += `<text class="num" x="${(x + bw / 2).toFixed(1)}" y="${topY + 34}" text-anchor="middle">v=${vVal.toFixed(1)}</text>`;
+    if (isAgent) b += `<circle cx="${(x + bw / 2).toFixed(1)}" cy="${topY - 10}" r="6" fill="var(--c-c)"/>`;
+    b += `</g>`;
+  }
+
+  // Timeline: Row 1 = Actor-Critic online TD delta_t; Row 2 = REINFORCE MC (G_t - b)
+  const tlX = 112, tlW = W - tlX - 18, cw = tlW / T;
+  const yAC = 104, yMC = 166, rowH = 34;
+
+  b += `<text x="${tlX - 8}" y="${yAC + 14}" text-anchor="end" class="lbl-strong" style="fill:var(--c-c)">Actor-Critic</text>`;
+  b += `<text x="${tlX - 8}" y="${yAC + 27}" text-anchor="end" style="font-size:10px">online &delta;<sub>t</sub></text>`;
+  b += `<text x="${tlX - 8}" y="${yMC + 14}" text-anchor="end" class="lbl-strong" style="fill:var(--c-b)">REINFORCE</text>`;
+  b += `<text x="${tlX - 8}" y="${yMC + 27}" text-anchor="end" style="font-size:10px">end-of-ep G<sub>t</sub>&minus;b</text>`;
+
+  const maxAbsAC = Math.max(2, ...tr3.acSteps.map((s) => Math.abs(s.delta)));
+  const maxAbsMC = Math.max(2, ...tr3.mcSteps.map((s) => Math.abs(s.delta)));
+
+  for (let t = 0; t < T; t++) {
+    const x = tlX + t * cw;
+    const ac = tr3.acSteps[t], mc = tr3.mcSteps[t];
+    const revealed = t < trStep;
+    const isNow = t === curIdx;
+
+    // Actor-Critic cell
+    if (revealed) {
+      const col = ac.delta >= 0 ? 'var(--c-b)' : 'var(--bad)';
+      const op = 0.2 + 0.72 * Math.min(1, Math.abs(ac.delta) / maxAbsAC);
+      b += `<g class="hit"><title>Step ${t + 1} — Actor-Critic (online!)\ns${ac.s} --[${ac.a ? 'right' : 'left'}]--> ${ac.done ? 'Goal' : 's' + ac.nextState}\nTD error δ = ${ac.delta.toFixed(2)}\nCritic Δw = ${ac.dw >= 0 ? '+' : ''}${ac.dw.toFixed(3)}\nActor Δθ_R = ${ac.dThetaR >= 0 ? '+' : ''}${ac.dThetaR.toFixed(3)}</title>`;
+      b += `<rect x="${(x + 1).toFixed(1)}" y="${yAC}" width="${Math.max(4, cw - 2).toFixed(1)}" height="${rowH}" rx="4" fill="${col}" fill-opacity="${op.toFixed(2)}" stroke="${isNow ? 'var(--ink)' : 'var(--line)'}" stroke-width="${isNow ? 2.2 : 1}"/>`;
+      if (cw >= 28) b += `<text class="num" x="${(x + cw / 2).toFixed(1)}" y="${yAC + 20}" text-anchor="middle" style="fill:var(--ink);font-weight:700">${ac.delta >= 0 ? '+' : ''}${ac.delta.toFixed(1)}</text>`;
+      b += `</g>`;
+    } else {
+      b += `<rect x="${(x + 1).toFixed(1)}" y="${yAC}" width="${Math.max(4, cw - 2).toFixed(1)}" height="${rowH}" rx="4" fill="var(--surface-2)" stroke="var(--line)" stroke-dasharray="3 2"/>`;
+    }
+
+    // REINFORCE cell (stays pending until epDone!)
+    if (epDone) {
+      const colM = mc.delta >= 0 ? 'var(--c-b)' : 'var(--bad)';
+      const opM = 0.2 + 0.72 * Math.min(1, Math.abs(mc.delta) / maxAbsMC);
+      b += `<g class="hit"><title>Step ${t + 1} — REINFORCE (retroactive at end of episode)\nReturn G_${t} = ${mc.G}, baseline = ${mc.baseline.toFixed(2)}\nAdvantage G_${t} - b = ${mc.delta.toFixed(2)}\nActor Δθ_R = ${mc.dThetaR >= 0 ? '+' : ''}${mc.dThetaR.toFixed(3)}</title>`;
+      b += `<rect x="${(x + 1).toFixed(1)}" y="${yMC}" width="${Math.max(4, cw - 2).toFixed(1)}" height="${rowH}" rx="4" fill="${colM}" fill-opacity="${opM.toFixed(2)}" stroke="${isNow ? 'var(--ink)' : 'var(--line)'}" stroke-width="${isNow ? 2.2 : 1}"/>`;
+      if (cw >= 28) b += `<text class="num" x="${(x + cw / 2).toFixed(1)}" y="${yMC + 20}" text-anchor="middle" style="fill:var(--ink);font-weight:700">${mc.delta >= 0 ? '+' : ''}${mc.delta.toFixed(1)}</text>`;
+      b += `</g>`;
+    } else {
+      b += `<g class="hit"><title>REINFORCE cannot update at step ${t + 1} yet — must wait until episode ends to compute G_${t}.</title>`;
+      b += `<rect x="${(x + 1).toFixed(1)}" y="${yMC}" width="${Math.max(4, cw - 2).toFixed(1)}" height="${rowH}" rx="4" fill="var(--surface-2)" stroke="var(--line)" stroke-dasharray="3 2"/>`;
+      b += `</g>`;
+    }
+
+    // Step labels
+    if (cw >= 24 || t === 0 || t === T - 1 || t % 2 === 0) {
+      b += `<text class="num" x="${(x + cw / 2).toFixed(1)}" y="${yMC + rowH + 15}" text-anchor="middle">t=${t + 1}</text>`;
+    }
+  }
+  if (!epDone) {
+    b += `<text x="${tlX + tlW / 2}" y="${yMC + 21}" text-anchor="middle" style="font-size:11px;font-style:italic">waiting for terminal state (step ${trStep} of ${T})&hellip;</text>`;
+  }
+
+  $('c3trace').innerHTML = b;
+
+  // Stepline narrative
+  const actName = cur.a ? 'right' : 'left';
+  const nextName = cur.done ? 'Goal' : `s<sub>${cur.nextState}</sub>`;
+  const mcCur = tr3.mcSteps[curIdx];
+  const mcInfo = epDone
+    ? `<br><b>REINFORCE (now unlocked at episode end):</b> G<sub>${curIdx}</sub> = ${mcCur.G}, G &minus; b = <b>${mcCur.delta.toFixed(2)}</b>, &Delta;&theta;<sub>R</sub> = <b>${mcCur.dThetaR >= 0 ? '+' : ''}${mcCur.dThetaR.toFixed(4)}</b> (applied retroactively to all ${T} steps).`
+    : `<br><b>REINFORCE:</b> <i>pending</i> &mdash; cannot compute G<sub>${curIdx}</sub> until the agent reaches Goal (step ${T}).`;
+  $('stepline3').innerHTML =
+    `<b>step ${curIdx + 1}/${T}</b>: s<sub>${cur.s}</sub> &mdash;[${actName}]&rarr; ${nextName}, R = &minus;1.<br>` +
+    `<b>Actor-Critic (online):</b> &delta; = &minus;1 + ${P3.gamma.toFixed(2)}&middot;(${cur.vNext.toFixed(2)}) &minus; (${cur.vS.toFixed(2)}) = <b>${cur.delta >= 0 ? '+' : ''}${cur.delta.toFixed(2)}</b> &nbsp;|&nbsp; critic &Delta;w = <b>${cur.dw >= 0 ? '+' : ''}${cur.dw.toFixed(3)}</b> &nbsp;|&nbsp; actor &Delta;&theta;<sub>R</sub> = <b>${cur.dThetaR >= 0 ? '+' : ''}${cur.dThetaR.toFixed(4)}</b> (p: ${cur.pBefore.toFixed(2)} &rarr; ${cur.pAfter.toFixed(2)}).` +
+    mcInfo;
+}
+
+function runTab3() {
+  const pr = ENV_PRESETS[P3.mode];
+  const ac = S.runActorCritic({
+    env: pr.env, criticMode: pr.criticMode,
+    alphaTheta: P3.alphaTheta, alphaW: P3.alphaW, gamma: P3.gamma,
+    episodes: pr.episodes, runs: P3.runs, seed: P3.seed
+  });
+  let rfYes, rfNo;
+  if (pr.env === 'line5') {
+    rfYes = S.runReinforceLine5({ alphaTheta: Math.min(0.1, P3.alphaTheta), alphaW: P3.alphaW, gamma: P3.gamma, useBaseline: true, episodes: pr.episodes, runs: P3.runs, seed: P3.seed });
+    rfNo = S.runReinforceLine5({ alphaTheta: Math.min(0.05, P3.alphaTheta * 0.5), alphaW: P3.alphaW, gamma: P3.gamma, useBaseline: false, episodes: pr.episodes, runs: P3.runs, seed: P3.seed });
+  } else {
+    rfYes = S.runReinforce({ alphaTheta: Math.pow(2, -9), alphaW: Math.pow(2, -6), gamma: P3.gamma, useBaseline: true, episodes: pr.episodes, runs: P3.runs, seed: P3.seed });
+    rfNo = S.runReinforce({ alphaTheta: Math.pow(2, -12), alphaW: Math.pow(2, -6), gamma: P3.gamma, useBaseline: false, episodes: pr.episodes, runs: P3.runs, seed: P3.seed });
+  }
+  res3 = { pr, ac, rfYes, rfNo };
+  drawTab3();
+}
+
+function drawTab3() {
+  const { pr, ac, rfYes, rfNo } = res3;
+  const eps = pr.episodes;
+
+  // Chart 3a: Learning curves
+  const W = 540, H = 310, m = { l: 50, r: 16, t: 22, b: 40 };
+  const yMin = pr.env === 'line5' ? -40 : -90;
+  const yMax = pr.env === 'line5' ? -3 : -5;
+  const sx = (e) => m.l + (e / (eps - 1)) * (W - m.l - m.r);
+  const sy = (v) => m.t + (1 - (Math.max(yMin, Math.min(yMax, v)) - yMin) / (yMax - yMin)) * (H - m.t - m.b);
+
+  let b = '';
+  const yTicks = pr.env === 'line5' ? [-40, -30, -20, -10, -5] : [-90, -70, -50, -30, -11.66];
+  yTicks.forEach((v) => {
+    const isOpt = Math.abs(v - pr.opt) < 0.1;
+    b += `<line class="${isOpt ? '' : 'grid-l'}" x1="${m.l}" x2="${W - m.r}" y1="${sy(v)}" y2="${sy(v)}" ${isOpt ? 'stroke="var(--ink)" stroke-dasharray="5 4" opacity="0.65"' : ''}/>`;
+    b += `<text x="${m.l - 6}" y="${sy(v) + 4}" text-anchor="end">${isOpt ? '&minus;' + Math.abs(v).toFixed(1) : '&minus;' + Math.abs(v)}</text>`;
+  });
+  [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
+    const e = Math.round(f * (eps - 1));
+    b += `<text x="${sx(e)}" y="${H - m.b + 16}" text-anchor="middle">${Math.round(f * eps)}</text>`;
+  });
+  b += `<line class="axis" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
+  b += `<text x="${(m.l + W - m.r) / 2}" y="${H - 5}" text-anchor="middle">episodes</text>`;
+  b += `<text x="6" y="12" class="lbl-strong">avg return</text>`;
+
+  const stride = Math.max(1, Math.floor(eps / 120));
+  const idxs = [];
+  for (let e = 0; e < eps; e += stride) idxs.push(e);
+  if (idxs[idxs.length - 1] !== eps - 1) idxs.push(eps - 1);
+
+  const smAC = smoothSeries(ac.meanReturn, 10);
+  const smRFY = smoothSeries(rfYes.meanReturn, 10);
+  const smRFN = smoothSeries(rfNo.meanReturn, 10);
+  const lp = (arr) => idxs.map((e, i) => `${i ? 'L' : 'M'}${sx(e).toFixed(1)},${sy(arr[e]).toFixed(1)}`).join(' ');
+
+  b += `<path d="${lp(smRFN)}" fill="none" stroke="var(--c-a)" stroke-width="2" opacity="0.85"/>`;
+  b += `<path d="${lp(smRFY)}" fill="none" stroke="var(--c-b)" stroke-width="2.3"/>`;
+  b += `<path d="${lp(smAC)}" fill="none" stroke="var(--c-c)" stroke-width="2.8"/>`;
+
+  for (let k = 0; k <= 10; k++) {
+    const e = Math.min(eps - 1, Math.round(k * (eps - 1) / 10));
+    b += `<circle class="hit" cx="${sx(e).toFixed(1)}" cy="${sy(smAC[e]).toFixed(1)}" r="6" fill="transparent"><title>Episode ${e + 1}\nActor-Critic: ${smAC[e].toFixed(1)}\nREINFORCE + base: ${smRFY[e].toFixed(1)}\nREINFORCE no base: ${smRFN[e].toFixed(1)}</title></circle>`;
+  }
+  $('c3a').innerHTML = b;
+
+  // Chart 3b: Bar chart of log10 gradient variance & final gap to optimal
+  const W2 = 420, H2 = 310, m2 = { l: 48, r: 18, t: 28, b: 64 };
+  const items = [
+    { name: 'Actor-Critic', col: 'var(--c-c)', gVar: ac.meanGradVar, gap: Math.abs(ac.finalReturn - pr.opt), ret: ac.finalReturn },
+    { name: 'REINFORCE +base', col: 'var(--c-b)', gVar: rfYes.meanGradVar, gap: Math.abs(rfYes.finalReturn - pr.opt), ret: rfYes.finalReturn },
+    { name: 'REINFORCE raw', col: 'var(--c-a)', gVar: rfNo.meanGradVar, gap: Math.abs(rfNo.finalReturn - pr.opt), ret: rfNo.finalReturn }
+  ];
+  const maxLog = Math.max(3, Math.ceil(Math.max(...items.map((x) => Math.log10(Math.max(1, x.gVar))))));
+  const bw = (W2 - m2.l - m2.r) / items.length;
+  const sy2 = (lv) => m2.t + (1 - Math.max(0, Math.min(maxLog, lv)) / maxLog) * (H2 - m2.t - m2.b);
+
+  let c = '';
+  for (let p = 0; p <= maxLog; p++) {
+    c += `<line class="grid-l" x1="${m2.l}" x2="${W2 - m2.r}" y1="${sy2(p)}" y2="${sy2(p)}"/>`;
+    c += `<text x="${m2.l - 6}" y="${sy2(p) + 4}" text-anchor="end">10^${p}</text>`;
+  }
+  c += `<line class="axis" x1="${m2.l}" x2="${W2 - m2.r}" y1="${H2 - m2.b}" y2="${H2 - m2.b}"/>`;
+  c += `<text x="6" y="14" class="lbl-strong">mean gradient Var (log<sub>10</sub>)</text>`;
+
+  items.forEach((it, i) => {
+    const cx = m2.l + (i + 0.5) * bw;
+    const lv = Math.log10(Math.max(1, it.gVar));
+    const yTop = sy2(lv), hBar = H2 - m2.b - yTop;
+    const wBar = bw * 0.52;
+    c += `<g class="hit"><title>${it.name}\nMean gradient variance: ${fmtSci(it.gVar)}\nFinal return: ${it.ret.toFixed(2)} (gap to optimal: ${it.gap.toFixed(2)})</title>`;
+    c += `<rect x="${(cx - wBar / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${wBar.toFixed(1)}" height="${Math.max(2, hBar).toFixed(1)}" rx="6" fill="${it.col}" opacity="0.88"/>`;
+    c += `<text class="num" x="${cx.toFixed(1)}" y="${(yTop - 6).toFixed(1)}" text-anchor="middle" style="fill:var(--ink);font-weight:700">${fmtSci(it.gVar)}</text>`;
+    c += `<text x="${cx.toFixed(1)}" y="${H2 - m2.b + 16}" text-anchor="middle" class="lbl-strong">${it.name}</text>`;
+    c += `<text class="num" x="${cx.toFixed(1)}" y="${H2 - m2.b + 31}" text-anchor="middle">ret ${it.ret.toFixed(1)}</text>`;
+    c += `<text class="num" x="${cx.toFixed(1)}" y="${H2 - m2.b + 45}" text-anchor="middle" style="fill:${it.gap > 5 ? 'var(--bad)' : 'var(--good)'}">gap ${it.gap.toFixed(1)}</text>`;
+    c += `</g>`;
+  });
+  $('c3b').innerHTML = c;
+
+  $('biasMsg3').innerHTML = P3.mode === 'corridor_ali'
+    ? `<span style="color:var(--bad);font-weight:700">Bootstrapping bias exposed:</span> tiny variance (${fmtSci(ac.meanGradVar)}), but final return stalls at <b>${ac.finalReturn.toFixed(1)}</b> instead of ${pr.opt.toFixed(1)}!`
+    : `Actor-Critic achieves <b>${(rfYes.meanGradVar / Math.max(1e-6, ac.meanGradVar)).toFixed(0)}&times; lower gradient variance</b> than REINFORCE + baseline while converging near optimal (${pr.opt.toFixed(1)}).`;
+
+  $('k3').innerHTML =
+    kpi('c', ac.finalReturn.toFixed(2), `Actor-Critic final return (opt ${pr.opt.toFixed(1)})`) +
+    kpi('b', rfYes.finalReturn.toFixed(2), 'REINFORCE + baseline final return') +
+    kpi('c', fmtSci(ac.meanGradVar), 'Actor-Critic mean gradient variance') +
+    kpi('b', fmtSci(rfYes.meanGradVar), 'REINFORCE + baseline grad variance');
+
+  let note;
+  if (P3.mode === 'corridor_tab') {
+    note = `<b>State-aware critic + state-aliased actor.</b> Even though the actor cannot tell s<sub>0</sub>, s<sub>1</sub>, and s<sub>2</sub> apart, giving the critic 3 state values lets &delta; = R + &gamma;v(S') &minus; v(S) immediately reward crossing s<sub>1</sub> &rarr; s<sub>2</sub> and penalize bouncing s<sub>1</sub> &rarr; s<sub>0</sub> on the very next step. Once the critic tracks v<sub>&pi;</sub>(s), one-step Actor-Critic is asymptotically unbiased and slashes gradient variance by orders of magnitude compared to Monte Carlo REINFORCE.`;
+  } else if (P3.mode === 'corridor_ali') {
+    note = `<b>The price of bootstrapping: bias from an aliased critic.</b> When the critic also shares a single weight w across all states, every non-terminal step has v(S') &minus; v(S) = w &minus; w = 0, so &delta; = &minus;1 regardless of whether the agent made progress or bounced backwards! Only the terminal transition s<sub>2</sub> &rarr; G (always action <i>right</i>) produces a positive TD error &delta; = &minus;1 &minus; w &gt; 0, which pushes p(right) all the way to 0.95 (return &approx; &minus;44). Monte Carlo REINFORCE avoids this trap because G<sub>t</sub> never bootstraps from a flawed critic.`;
+  } else {
+    note = `<b>5-state corridor with distinct state features.</b> With separate weights for each state, both Actor-Critic and REINFORCE converge toward the optimal deterministic-right policy (return &minus;5.0). Notice how Actor-Critic updates immediately on every step and maintains vastly lower gradient variance than Monte Carlo REINFORCE, which must wait until each episode finishes.`;
+  }
+  $('n3').innerHTML = note;
+}
+
+window.__pg = { P1, P2, P3, res2: () => res2, res3: () => res3, tr3: () => tr3, stepWalker1, runTab2, runTab3 };
+
+if (window.mlViz) {
+  window.mlViz.initTabs({
+    tablistId: 'tabs',
+    slugs: { p1: 'corridor', p2: 'baseline', p3: 'actor-critic' },
+    onSelect: (pid) => {
+      stopPlay1();
+      stopPlay3();
+      if (!seen[pid]) {
+        seen[pid] = true;
+        if (pid === 'p2') runTab2(true);
+        if (pid === 'p3') { buildTrace3(); runTab3(); }
+      }
+    },
+  });
+}
+})();
+</script>
+</body>
+</html>

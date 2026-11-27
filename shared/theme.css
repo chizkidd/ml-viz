@@ -158,3 +158,41 @@ footer.site { margin-top: 36px; padding-top: 16px; border-top: 1px solid var(--l
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 .controls > .ctl { max-width: 100%; }
 .ctl { max-width: 100%; }
+
+/* interactive SVG tooltips (mouse, touch, focus) */
+.viz-tip {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  max-width: min(300px, calc(100vw - 24px));
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+  font: 500 12px/1.4 var(--sans);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity .12s ease, transform .12s ease;
+  white-space: pre-line;
+}
+.viz-tip.show { opacity: 1; transform: translateY(0); }
+
+/* inline audio player polish */
+audio.clip-audio { width: 100%; height: 38px; margin-top: 8px; border-radius: 9px; }
+
+/* mobile layout & touch target polish */
+@media (max-width: 640px) {
+  .wrap { padding: 0 12px 48px; }
+  .card { padding: 13px; border-radius: 12px; }
+  .tab { padding: 9px 13px; font-size: 13px; }
+  .seg button { padding: 9px 11px; min-height: 38px; }
+  .btn, select { min-height: 38px; }
+  .kpi .v { font-size: 1.3rem; }
+  table.t th, table.t td { padding: 6px 6px; font-size: .82rem; }
+}
+@media (pointer: coarse) {
+  .seg button, .tab, .btn { min-height: 40px; }
+  input[type="range"] { min-height: 32px; }
+}
+

@@ -10,22 +10,45 @@ cd "$ROOT"
 
 echo "==> Rebuilding pages"
 python3 inference-playground/build.py
+python3 speculative-decoding/build.py
 python3 igbo-tone-loss/build.py
 python3 td-lambda/build.py
+python3 policy-gradients/build.py
+python3 muon-optimizers/build.py
+python3 moe-routing/build.py
 
 if [ "${1:-}" = "--check-clean" ]; then
   echo "==> Checking for generated HTML drift"
-  git diff --exit-code -- inference-playground/index.html igbo-tone-loss/index.html td-lambda/index.html
+  git diff --exit-code -- \
+    inference-playground/index.html \
+    speculative-decoding/index.html \
+    igbo-tone-loss/index.html \
+    td-lambda/index.html \
+    policy-gradients/index.html \
+    muon-optimizers/index.html \
+    moe-routing/index.html
 fi
 
 echo "==> Running inference-playground tests"
 node inference-playground/tests/test_sim.js
+
+echo "==> Running speculative-decoding tests"
+node speculative-decoding/tests/test_spec.js
 
 echo "==> Running igbo-tone-loss tests"
 node igbo-tone-loss/tests/test_metrics.js
 
 echo "==> Running flashattention-tiling tests"
 node flashattention-tiling/tests/test_fa.js
+
+echo "==> Running muon-optimizers tests"
+node muon-optimizers/tests/test_muon.js
+
+echo "==> Running policy-gradients tests"
+node policy-gradients/tests/test_pg.js
+
+echo "==> Running moe-routing tests"
+node moe-routing/tests/test_moe.js
 
 echo "==> Running td-lambda tests (Node vs NumPy)"
 if python3 -c "import numpy" 2>/dev/null; then
