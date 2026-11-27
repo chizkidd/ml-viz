@@ -59,6 +59,10 @@
         <div class="ctl" style="min-width:auto"><label>&nbsp;</label><div style="display:flex;gap:8px"><button class="btn primary" id="play" type="button">Pause</button><button class="btn" id="reroll" type="button">New traffic</button></div></div>
         <div class="ctl" style="min-width:auto"><label>Speed</label><div class="seg" id="speed"><button data-s="2" aria-pressed="false">2x</button><button data-s="6" aria-pressed="true">6x</button><button data-s="20" aria-pressed="false">20x</button></div></div>
       </div>
+      <div class="controls">
+        <div class="ctl" style="min-width:auto"><label>Continuous prefill budget / step</label><div class="seg" id="cPf"><button data-v="0" aria-pressed="true">unlimited</button><button data-v="4" aria-pressed="false">4</button><button data-v="2" aria-pressed="false">2</button><button data-v="1" aria-pressed="false">1</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Continuous KV memory cap</label><div class="seg" id="cKv"><button data-v="none" aria-pressed="true">unlimited</button><button data-v="contig4" aria-pressed="false">4 slots (contiguous)</button><button data-v="paged4" aria-pressed="false">4 slots (paged)</button></div></div>
+      </div>
       <div class="scrub"><span class="small">time</span><input type="range" id="scrub" min="0" max="1000" value="0" aria-label="Scrub time"><span class="tt" id="tt"></span></div>
       <div class="callout" id="headline" style="margin-top:12px"></div>
     </div>
@@ -174,31 +178,56 @@
       <div class="legend"><span><i style="background:var(--c-a)"></i>naive (recompute)</span><span><i style="background:var(--c-b)"></i>with KV cache</span></div>
       <div class="callout" id="xoverNote" style="margin-top:10px"></div>
     </div>
+    <div class="card">
+      <h2>Predict first: what changes on A100 and H100? <span class="badge published">analytical prediction</span></h2>
+      <div class="small" style="margin-bottom:8px">Same model, precision, and context as selected above, compared across Tesla T4 (measured copy BW) and the upcoming A100 / H100 cross-GPU benchmark targets in <span class="mono">mini-vllm</span>.</div>
+      <div style="overflow-x:auto"><table class="t" id="gpuPredTable"></table></div>
+    </div>
   </section>
 
   <!-- ============ 4. ENGINE VS VLLM ============ -->
   <section class="panel" id="p4" hidden>
     <div class="card">
-      <h2>My engine against vLLM and Hugging Face <span class="badge measured">measured</span></h2>
-      <div class="small">Stage 12 and the vLLM comparison notebook. Tesla T4, same 64-request mixed trace replayed at each rate, over HTTP.</div>
+      <h2>Closing the gap: Stage 12 &rarr; 13 &rarr; 14 vs vLLM <span class="badge measured">measured</span></h2>
+      <div class="small">Tesla T4, same 64-request mixed trace replayed over HTTP. Stage 12 introduced the engine; Stage 13 folded GQA heads (moving 29% of attention bytes), refined buckets, and added eager fallback; Stage 14 replaced the gather copy with an in-place Triton paged-attention kernel.</div>
       <div class="controls" style="margin-top:12px">
         <div class="ctl" style="min-width:auto"><label>Model</label><div class="seg" id="segSize"><button data-v="0.5B" aria-pressed="false">Qwen2.5 0.5B</button><button data-v="1.5B" aria-pressed="true">Qwen2.5 1.5B</button></div></div>
         <div class="ctl" style="min-width:auto"><label>Metric</label><div class="seg" id="segMetric"><button data-v="tpot" aria-pressed="true">Time per token</button><button data-v="ttft" aria-pressed="false">Time to first token</button><button data-v="good" aria-pressed="false">Goodput</button></div></div>
         <div class="ctl" style="min-width:auto"><label>Scale</label><div class="seg" id="segScale"><button data-v="log" aria-pressed="true">log</button><button data-v="lin" aria-pressed="false">linear</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>Series</label><div class="seg" id="segHf"><button data-v="eng" aria-pressed="true">Stages 12–14 vs vLLM</button><button data-v="all" aria-pressed="false">+ HF baselines</button></div></div>
+        <div class="ctl" style="min-width:auto"><label>GPU target</label><div class="seg" id="segGpu"><button data-v="t4" aria-pressed="true">Tesla T4 (measured)</button><button data-v="next" aria-pressed="false">A100 / H100 (planned)</button></div></div>
       </div>
-      <svg class="chart" id="vChart" role="img" aria-label="Engine vs vLLM across arrival rates"></svg>
+      <div class="callout" id="gpuNextNote" style="margin-bottom:10px" hidden><b>Cross-GPU phase (planned):</b> Controlled A100 and H100 runs against vLLM are the next benchmark phase in <a href="https://github.com/chizkidd/mini-vllm#next-cross-gpu-inference-benchmarks" target="_blank" rel="noopener">mini-vllm</a>. See Tab 3's analytical ridge-point table for pre-benchmark predictions; T4 measurements remain plotted below.</div>
+      <svg class="chart" id="vChart" role="img" aria-label="Engine Stages 12 to 14 vs vLLM across arrival rates"></svg>
       <div class="legend" id="vLegend"></div>
       <div class="callout" id="vNote" style="margin-top:10px"></div>
       <div style="overflow-x:auto;margin-top:10px"><table class="t" id="vTable"></table></div>
     </div>
     <div class="grid two" style="margin-top:14px">
+      <div class="card">
+        <h2>The Graph-in-Batch paradox (Stage 12) <span class="badge measured">measured</span></h2>
+        <div class="small" style="margin-bottom:6px">4 req/s open-loop median TPOT. On 1.5B, the uncaptured padded-bucket control (<span class="mono">static</span>) is just as slow as <span class="mono">graph</span> (2.28&times; slower than eager), proving fixed padded buckets — not CUDA graph capture — caused the regression.</div>
+        <svg class="chart" id="vModes" role="img" aria-label="Stage 12 eager vs static vs graph median TPOT"></svg>
+        <div class="legend"><span><i style="background:var(--c-c)"></i>eager</span><span><i style="background:var(--c-a)"></i>static buckets (uncaptured)</span><span><i style="background:var(--c-b)"></i>CUDA graph</span></div>
+      </div>
+      <div class="card">
+        <div class="row-head">
+          <div><h2>Ablations at 8 req/s <span class="badge measured">measured</span></h2>
+            <div class="small" id="ablSub">In-process median TPOT (ms) at 8 req/s on the selected model size. Lower is better.</div></div>
+          <div class="seg" id="segAbl"><button data-v="s13" aria-pressed="true">Stage 13 levers</button><button data-v="s14" aria-pressed="false">Stage 14 kernels</button></div>
+        </div>
+        <svg class="chart" id="vAbl" role="img" aria-label="Stage 13 and 14 ablations at 8 req/s"></svg>
+        <div class="callout" id="ablNote" style="margin-top:10px"></div>
+      </div>
+    </div>
+    <div class="grid two" style="margin-top:14px">
       <div class="card"><h2>Single request latency <span class="badge measured">measured</span></h2>
-        <div class="small" style="margin-bottom:6px">No queueing, 128 new tokens, mean over three workloads. Lower is better.</div>
+        <div class="small" style="margin-bottom:6px">No queueing, 128 new tokens, mean over three workloads (Stage 12 HTTP). Lower is better.</div>
         <svg class="chart" id="vSingle" role="img" aria-label="Single-stream time per token"></svg></div>
-      <div class="card"><h2>Capacity <span class="badge measured">measured</span></h2>
+      <div class="card"><h2>Capacity (90% SLO attainment) <span class="badge measured">measured</span></h2>
         <div class="small" style="margin-bottom:6px" id="capSub"></div>
         <div style="overflow-x:auto"><table class="t" id="capTable"></table></div>
-        <div class="small" style="margin-top:8px">Capacity here is the highest tested arrival rate where at least 90% of requests met the latency targets. The sweep stopped at 8 req/s, so "8+" means "did not break yet".</div></div>
+        <div class="small" style="margin-top:8px">Highest tested arrival rate where &ge;90% of requests met latency targets. Sweep stopped at 8 req/s ("8+" means did not break yet). Stages 13 and 14 raised 1.5B capacity from 2 req/s to 8+ req/s (100% SLO in Stage 14).</div></div>
     </div>
   </section>
 
@@ -206,7 +235,7 @@
 </div>
 
 <script>
-const D = {"source":"chizkidd/mini-vllm results/*.json, Tesla T4","roofline":{"context_len":192,"spec_bw_gbps":320,"measured_bw_gbps":233.46582928965398,"weight_bytes":988065536,"kv_bytes_per_token":12288,"compute_peak_tflops":65.1},"kv_crossover":{"points":[{"n_new":16,"naive_tok_s":41.8985,"cached_tok_s":38.5575,"speedup_x":0.9203},{"n_new":32,"naive_tok_s":41.6598,"cached_tok_s":37.7144,"speedup_x":0.9053},{"n_new":64,"naive_tok_s":42.4824,"cached_tok_s":37.5037,"speedup_x":0.8828},{"n_new":128,"naive_tok_s":41.4084,"cached_tok_s":37.1785,"speedup_x":0.8978},{"n_new":256,"naive_tok_s":42.0738,"cached_tok_s":37.474,"speedup_x":0.8907},{"n_new":300,"naive_tok_s":40.868,"cached_tok_s":37.0089,"speedup_x":0.9056},{"n_new":340,"naive_tok_s":39.7324,"cached_tok_s":37.0287,"speedup_x":0.932},{"n_new":380,"naive_tok_s":38.916,"cached_tok_s":36.8588,"speedup_x":0.9471},{"n_new":400,"naive_tok_s":38.1182,"cached_tok_s":37.2182,"speedup_x":0.9764},{"n_new":440,"naive_tok_s":36.5464,"cached_tok_s":37.2371,"speedup_x":1.0189},{"n_new":512,"naive_tok_s":36.7368,"cached_tok_s":37.2403,"speedup_x":1.0137}],"crossover_probe":422.2,"crossover_fit":487.8,"eager_tok_s":37.6,"compiled_tok_s":76.3,"compiled_vs_eager_x":2.03,"eager_pct_ceiling":15.3,"compiled_pct_ceiling":31.2},"batch_scaling":[{"B":1,"ttft_ms":23.7891,"itl_p50_ms":24.2342,"agg_tok_s":41.2639,"per_req_tok_s":41.2639,"kv_mib":2.2383},{"B":2,"ttft_ms":23.0525,"itl_p50_ms":22.8359,"agg_tok_s":87.5813,"per_req_tok_s":43.7907,"kv_mib":4.4766},{"B":4,"ttft_ms":23.2757,"itl_p50_ms":23.2508,"agg_tok_s":172.0368,"per_req_tok_s":43.0092,"kv_mib":8.9531},{"B":8,"ttft_ms":40.0728,"itl_p50_ms":23.4775,"agg_tok_s":340.7523,"per_req_tok_s":42.594,"kv_mib":17.9062},{"B":16,"ttft_ms":90.6486,"itl_p50_ms":23.6453,"agg_tok_s":676.6677,"per_req_tok_s":42.2917,"kv_mib":35.8125},{"B":32,"ttft_ms":191.4218,"itl_p50_ms":23.8428,"agg_tok_s":1342.1249,"per_req_tok_s":41.9414,"kv_mib":71.625},{"B":64,"ttft_ms":389.9597,"itl_p50_ms":25.4358,"agg_tok_s":2516.1348,"per_req_tok_s":39.3146,"kv_mib":143.25}],"ceiling":[{"B":1,"ceiling_agg_tok_s":235.7229,"pct_of_ceiling":17.5053},{"B":2,"ceiling_agg_tok_s":470.3255,"pct_of_ceiling":18.6214},{"B":4,"ceiling_agg_tok_s":936.2013,"pct_of_ceiling":18.376},{"B":8,"ceiling_agg_tok_s":1854.8541,"pct_of_ceiling":18.3708},{"B":16,"ceiling_agg_tok_s":3641.4518,"pct_of_ceiling":18.5824},{"B":32,"ceiling_agg_tok_s":7024.4137,"pct_of_ceiling":19.1066},{"B":64,"ceiling_agg_tok_s":13117.6644,"pct_of_ceiling":19.1813}],"closed":[{"B":4,"policy":"static","goodput_tok_s":62.9911,"lat_mean_s":34.3301,"lat_p99_s":68.0571,"ttft_mean_s":30.1445},{"B":4,"policy":"continuous","goodput_tok_s":126.9653,"lat_mean_s":14.7017,"lat_p99_s":33.7651,"ttft_mean_s":12.741},{"B":8,"policy":"static","goodput_tok_s":98.7799,"lat_mean_s":24.5211,"lat_p99_s":43.3993,"ttft_mean_s":19.3062},{"B":8,"policy":"continuous","goodput_tok_s":217.9299,"lat_mean_s":7.8284,"lat_p99_s":19.6715,"ttft_mean_s":5.7754},{"B":16,"policy":"static","goodput_tok_s":167.7204,"lat_mean_s":16.4588,"lat_p99_s":25.5601,"ttft_mean_s":10.5213},{"B":16,"policy":"continuous","goodput_tok_s":344.5356,"lat_mean_s":4.7639,"lat_p99_s":12.4428,"ttft_mean_s":2.5311},{"B":32,"policy":"static","goodput_tok_s":205.0587,"lat_mean_s":15.813,"lat_p99_s":20.9058,"ttft_mean_s":6.32},{"B":32,"policy":"continuous","goodput_tok_s":354.3429,"lat_mean_s":4.3019,"lat_p99_s":12.0985,"ttft_mean_s":1.3735}],"load":[{"rate":0.5,"policy":"static","goodput_tok_s":34.1871,"lat_p50_s":4.2569,"lat_p99_s":12.6543,"ttft_p50_s":0.885,"utilization":0.6944},{"rate":0.5,"policy":"continuous","goodput_tok_s":34.8887,"lat_p50_s":1.007,"lat_p99_s":6.9814,"ttft_p50_s":0.032,"utilization":0.5976},{"rate":1.0,"policy":"static","goodput_tok_s":63.6202,"lat_p50_s":7.7877,"lat_p99_s":13.2489,"ttft_p50_s":1.9806,"utilization":0.9293},{"rate":1.0,"policy":"continuous","goodput_tok_s":66.4731,"lat_p50_s":1.0984,"lat_p99_s":7.605,"ttft_p50_s":0.0381,"utilization":0.8268},{"rate":2.0,"policy":"static","goodput_tok_s":109.0841,"lat_p50_s":8.8347,"lat_p99_s":13.9966,"ttft_p50_s":2.8212,"utilization":0.999},{"rate":2.0,"policy":"continuous","goodput_tok_s":120.7259,"lat_p50_s":1.1357,"lat_p99_s":7.7569,"ttft_p50_s":0.0435,"utilization":0.9761},{"rate":3.0,"policy":"static","goodput_tok_s":129.0729,"lat_p50_s":11.7286,"lat_p99_s":17.4368,"ttft_p50_s":5.2144,"utilization":1.0},{"rate":3.0,"policy":"continuous","goodput_tok_s":165.9901,"lat_p50_s":1.1648,"lat_p99_s":7.9495,"ttft_p50_s":0.0421,"utilization":1.0},{"rate":4.0,"policy":"static","goodput_tok_s":127.0968,"lat_p50_s":14.0414,"lat_p99_s":20.6727,"ttft_p50_s":7.2163,"utilization":1.0},{"rate":4.0,"policy":"continuous","goodput_tok_s":203.5405,"lat_p50_s":1.1316,"lat_p99_s":7.7828,"ttft_p50_s":0.0439,"utilization":1.0},{"rate":6.0,"policy":"static","goodput_tok_s":126.9011,"lat_p50_s":15.8889,"lat_p99_s":24.8117,"ttft_p50_s":8.9701,"utilization":1.0},{"rate":6.0,"policy":"continuous","goodput_tok_s":262.1511,"lat_p50_s":1.2568,"lat_p99_s":8.4307,"ttft_p50_s":0.0464,"utilization":1.0},{"rate":8.0,"policy":"static","goodput_tok_s":140.4195,"lat_p50_s":13.875,"lat_p99_s":23.4964,"ttft_p50_s":11.1307,"utilization":1.0},{"rate":8.0,"policy":"continuous","goodput_tok_s":306.2836,"lat_p50_s":1.4273,"lat_p99_s":8.5039,"ttft_p50_s":0.0525,"utilization":1.0}],"mem":[{"budget_slots":2,"policy":"contiguous","pool_mib":17.1562,"goodput_tok_s":78.7435,"lat_p50_s":25.4243,"mean_running":1.9479,"kv_fill":0.3289},{"budget_slots":2,"policy":"paged","pool_mib":17.1562,"goodput_tok_s":132.9645,"lat_p50_s":12.9062,"mean_running":3.7571,"kv_fill":0.7524},{"budget_slots":4,"policy":"contiguous","pool_mib":34.3125,"goodput_tok_s":145.8426,"lat_p50_s":13.1919,"mean_running":3.7571,"kv_fill":0.3171},{"budget_slots":4,"policy":"paged","pool_mib":34.3125,"goodput_tok_s":227.1194,"lat_p50_s":6.4068,"mean_running":6.8223,"kv_fill":0.7524},{"budget_slots":8,"policy":"contiguous","pool_mib":68.625,"goodput_tok_s":248.6192,"lat_p50_s":6.7646,"mean_running":6.6295,"kv_fill":0.2798},{"budget_slots":8,"policy":"paged","pool_mib":68.625,"goodput_tok_s":378.6415,"lat_p50_s":3.5525,"mean_running":12.348,"kv_fill":0.7524},{"budget_slots":16,"policy":"contiguous","pool_mib":137.25,"goodput_tok_s":394.9242,"lat_p50_s":3.671,"mean_running":11.2314,"kv_fill":0.237},{"budget_slots":16,"policy":"paged","pool_mib":137.25,"goodput_tok_s":422.8182,"lat_p50_s":3.6145,"mean_running":14.8175,"kv_fill":0.7524}],"kv_breakdown":[{"budget_slots":2,"policy":"contiguous","stored":32.8852,"reserved_empty":67.1148,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":2,"policy":"paged","stored":63.7784,"reserved_empty":19.1889,"rounding":1.8046,"not_handed_out":15.2282},{"budget_slots":4,"policy":"contiguous","stored":31.7149,"reserved_empty":68.2851,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":4,"policy":"paged","stored":57.589,"reserved_empty":17.3267,"rounding":1.6295,"not_handed_out":23.4549},{"budget_slots":8,"policy":"contiguous","stored":27.9808,"reserved_empty":72.0192,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":8,"policy":"paged","stored":52.1163,"reserved_empty":15.6801,"rounding":1.4746,"not_handed_out":30.7289},{"budget_slots":16,"policy":"contiguous","stored":23.7018,"reserved_empty":76.2982,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":16,"policy":"paged","stored":31.2698,"reserved_empty":9.4081,"rounding":0.8848,"not_handed_out":58.4374}],"block_size":[{"block_size":8.0,"rounding_pct":1.1777,"kv_fill":0.7597,"goodput_tok_s":354.9992,"step_vs_contiguous_x":1.0993},{"block_size":16.0,"rounding_pct":2.1288,"kv_fill":0.7524,"goodput_tok_s":356.1472,"step_vs_contiguous_x":1.0954},{"block_size":32.0,"rounding_pct":4.5205,"kv_fill":0.734,"goodput_tok_s":356.9925,"step_vs_contiguous_x":1.0925},{"block_size":64.0,"rounding_pct":8.6285,"kv_fill":0.7024,"goodput_tok_s":357.4211,"step_vs_contiguous_x":1.0908},{"block_size":128.0,"rounding_pct":18.5834,"kv_fill":0.6259,"goodput_tok_s":356.1517,"step_vs_contiguous_x":1.0937},{"block_size":256.0,"rounding_pct":33.7014,"kv_fill":0.5096,"goodput_tok_s":356.8514,"step_vs_contiguous_x":1.0917}],"block_size_ref":{"goodput_tok_s":391.7066,"itl_p50_ms":24.9584,"kv_fill":0.237},"vllm_load":[{"system":"vLLM","size":"0.5B","rate":1.0,"tpot_p50_ms":5.8664,"ttft_p50_s":0.0231,"goodput_tok_s":71.596,"req_s":1.0689,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"0.5B","rate":1.0,"tpot_p50_ms":10.5745,"ttft_p50_s":0.0421,"goodput_tok_s":70.2442,"req_s":1.0487,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":1.0,"tpot_p50_ms":32.3476,"ttft_p50_s":38.969,"goodput_tok_s":1.7228,"req_s":0.4537,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"0.5B","rate":1.0,"tpot_p50_ms":31.2094,"ttft_p50_s":4.3364,"goodput_tok_s":22.3782,"req_s":0.9036,"slo_attainment":0.2812},{"system":"engine graph (HTTP)","size":"0.5B","rate":2.0,"tpot_p50_ms":12.1324,"ttft_p50_s":0.0455,"goodput_tok_s":133.437,"req_s":1.9921,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":2.0,"tpot_p50_ms":32.3907,"ttft_p50_s":51.5587,"goodput_tok_s":1.7387,"req_s":0.4579,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"0.5B","rate":2.0,"tpot_p50_ms":31.0367,"ttft_p50_s":12.6527,"goodput_tok_s":4.3835,"req_s":1.1545,"slo_attainment":0.0625},{"system":"vLLM","size":"0.5B","rate":2.0,"tpot_p50_ms":5.76,"ttft_p50_s":0.0224,"goodput_tok_s":140.1215,"req_s":2.0918,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":4.0,"tpot_p50_ms":32.4588,"ttft_p50_s":58.3616,"goodput_tok_s":1.7351,"req_s":0.457,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"0.5B","rate":4.0,"tpot_p50_ms":31.0113,"ttft_p50_s":15.0478,"goodput_tok_s":6.5767,"req_s":1.3113,"slo_attainment":0.0938},{"system":"vLLM","size":"0.5B","rate":4.0,"tpot_p50_ms":5.8431,"ttft_p50_s":0.0236,"goodput_tok_s":268.6205,"req_s":4.0102,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"0.5B","rate":4.0,"tpot_p50_ms":18.3699,"ttft_p50_s":0.0555,"goodput_tok_s":228.279,"req_s":3.4079,"slo_attainment":1.0},{"system":"HF static batch 8","size":"0.5B","rate":8.0,"tpot_p50_ms":30.8211,"ttft_p50_s":19.3649,"goodput_tok_s":7.5507,"req_s":1.1786,"slo_attainment":0.1406},{"system":"vLLM","size":"0.5B","rate":8.0,"tpot_p50_ms":6.1205,"ttft_p50_s":0.0237,"goodput_tok_s":494.7226,"req_s":7.3856,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"0.5B","rate":8.0,"tpot_p50_ms":50.3989,"ttft_p50_s":0.108,"goodput_tok_s":296.9662,"req_s":4.4334,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":8.0,"tpot_p50_ms":32.2049,"ttft_p50_s":61.4613,"goodput_tok_s":0.6102,"req_s":0.4594,"slo_attainment":0.0469},{"system":"vLLM","size":"1.5B","rate":1.0,"tpot_p50_ms":16.7465,"ttft_p50_s":0.0637,"goodput_tok_s":68.3627,"req_s":1.0206,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"1.5B","rate":1.0,"tpot_p50_ms":24.4735,"ttft_p50_s":0.0794,"goodput_tok_s":66.7191,"req_s":0.996,"slo_attainment":1.0},{"system":"HF sequential","size":"1.5B","rate":1.0,"tpot_p50_ms":38.4062,"ttft_p50_s":51.5622,"goodput_tok_s":1.4565,"req_s":0.3836,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"1.5B","rate":1.0,"tpot_p50_ms":36.9303,"ttft_p50_s":5.9374,"goodput_tok_s":6.7406,"req_s":0.8296,"slo_attainment":0.1562},{"system":"engine graph (HTTP)","size":"1.5B","rate":2.0,"tpot_p50_ms":36.4303,"ttft_p50_s":0.1136,"goodput_tok_s":114.153,"req_s":1.7042,"slo_attainment":1.0},{"system":"HF sequential","size":"1.5B","rate":2.0,"tpot_p50_ms":38.4796,"ttft_p50_s":63.8568,"goodput_tok_s":1.4616,"req_s":0.385,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"1.5B","rate":2.0,"tpot_p50_ms":37.2539,"ttft_p50_s":12.1085,"goodput_tok_s":5.1918,"req_s":1.0351,"slo_attainment":0.0938},{"system":"vLLM","size":"1.5B","rate":2.0,"tpot_p50_ms":16.5025,"ttft_p50_s":0.0515,"goodput_tok_s":130.181,"req_s":1.9434,"slo_attainment":1.0},{"system":"HF sequential","size":"1.5B","rate":4.0,"tpot_p50_ms":38.2847,"ttft_p50_s":69.375,"goodput_tok_s":0.5134,"req_s":0.3866,"slo_attainment":0.0469},{"system":"HF static batch 8","size":"1.5B","rate":4.0,"tpot_p50_ms":37.0713,"ttft_p50_s":21.6454,"goodput_tok_s":6.3964,"req_s":1.1831,"slo_attainment":0.1094},{"system":"vLLM","size":"1.5B","rate":4.0,"tpot_p50_ms":16.8882,"ttft_p50_s":0.0536,"goodput_tok_s":233.5703,"req_s":3.4869,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"1.5B","rate":4.0,"tpot_p50_ms":96.1867,"ttft_p50_s":0.1864,"goodput_tok_s":116.2814,"req_s":2.2599,"slo_attainment":0.5312},{"system":"HF static batch 8","size":"1.5B","rate":8.0,"tpot_p50_ms":37.3654,"ttft_p50_s":25.4038,"goodput_tok_s":5.4281,"req_s":0.9364,"slo_attainment":0.1094},{"system":"vLLM","size":"1.5B","rate":8.0,"tpot_p50_ms":18.2296,"ttft_p50_s":0.0584,"goodput_tok_s":379.4284,"req_s":5.6644,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"1.5B","rate":8.0,"tpot_p50_ms":143.2607,"ttft_p50_s":0.6315,"goodput_tok_s":80.3562,"req_s":2.4832,"slo_attainment":0.1875},{"system":"HF sequential","size":"1.5B","rate":8.0,"tpot_p50_ms":39.2607,"ttft_p50_s":75.7249,"goodput_tok_s":0.3771,"req_s":0.3771,"slo_attainment":0.0312}],"latency":[{"size":"0.5B","workload":"copy","system":"vLLM","tpot_ms":6.1593,"ttft_ms":21.1046,"speedup_vs_hf":5.2548},{"size":"0.5B","workload":"code","system":"vLLM","tpot_ms":6.2481,"ttft_ms":20.6605,"speedup_vs_hf":5.2455},{"size":"0.5B","workload":"open","system":"vLLM","tpot_ms":6.2959,"ttft_ms":20.2534,"speedup_vs_hf":5.1502},{"size":"0.5B","workload":"copy","system":"engine graph (HTTP)","tpot_ms":9.4433,"ttft_ms":43.1383,"speedup_vs_hf":3.4274},{"size":"0.5B","workload":"code","system":"engine graph (HTTP)","tpot_ms":9.3925,"ttft_ms":43.2714,"speedup_vs_hf":3.4895},{"size":"0.5B","workload":"open","system":"engine graph (HTTP)","tpot_ms":9.0949,"ttft_ms":41.6699,"speedup_vs_hf":3.5652},{"size":"0.5B","workload":"copy","system":"HF sequential","tpot_ms":32.3662,"ttft_ms":41.0396,"speedup_vs_hf":1.0},{"size":"0.5B","workload":"code","system":"HF sequential","tpot_ms":32.7746,"ttft_ms":41.4487,"speedup_vs_hf":1.0},{"size":"0.5B","workload":"open","system":"HF sequential","tpot_ms":32.425,"ttft_ms":41.2889,"speedup_vs_hf":1.0},{"size":"1.5B","workload":"copy","system":"vLLM","tpot_ms":17.2684,"ttft_ms":29.9739,"speedup_vs_hf":2.2701},{"size":"1.5B","workload":"code","system":"vLLM","tpot_ms":19.5091,"ttft_ms":29.2705,"speedup_vs_hf":1.9954},{"size":"1.5B","workload":"open","system":"vLLM","tpot_ms":20.8093,"ttft_ms":28.7361,"speedup_vs_hf":1.8545},{"size":"1.5B","workload":"copy","system":"engine graph (HTTP)","tpot_ms":19.1721,"ttft_ms":75.7797,"speedup_vs_hf":2.0447},{"size":"1.5B","workload":"code","system":"engine graph (HTTP)","tpot_ms":19.2571,"ttft_ms":74.6087,"speedup_vs_hf":2.0215},{"size":"1.5B","workload":"open","system":"engine graph (HTTP)","tpot_ms":18.8355,"ttft_ms":63.2679,"speedup_vs_hf":2.0488},{"size":"1.5B","workload":"copy","system":"HF sequential","tpot_ms":39.2009,"ttft_ms":50.9801,"speedup_vs_hf":1.0},{"size":"1.5B","workload":"code","system":"HF sequential","tpot_ms":38.9277,"ttft_ms":50.137,"speedup_vs_hf":1.0},{"size":"1.5B","workload":"open","system":"HF sequential","tpot_ms":38.5904,"ttft_ms":49.0461,"speedup_vs_hf":1.0}],"capacity":[{"size":"0.5B","system":"vLLM","capacity_req_s":8.0,"target":0.9},{"size":"0.5B","system":"engine graph (HTTP)","capacity_req_s":8.0,"target":0.9},{"size":"0.5B","system":"HF sequential","capacity_req_s":null,"target":0.9},{"size":"0.5B","system":"HF static batch 8","capacity_req_s":null,"target":0.9},{"size":"1.5B","system":"vLLM","capacity_req_s":8.0,"target":0.9},{"size":"1.5B","system":"engine graph (HTTP)","capacity_req_s":2.0,"target":0.9},{"size":"1.5B","system":"HF sequential","capacity_req_s":null,"target":0.9},{"size":"1.5B","system":"HF static batch 8","capacity_req_s":null,"target":0.9}],"slo":{"ttft_s":2.0,"tpot_s":0.1}};
+const D = {"source":"chizkidd/mini-vllm results/*.json, Tesla T4","roofline":{"context_len":192,"spec_bw_gbps":320,"measured_bw_gbps":233.46582928965398,"weight_bytes":988065536,"kv_bytes_per_token":12288,"compute_peak_tflops":65.1},"kv_crossover":{"points":[{"n_new":16,"naive_tok_s":41.8985,"cached_tok_s":38.5575,"speedup_x":0.9203},{"n_new":32,"naive_tok_s":41.6598,"cached_tok_s":37.7144,"speedup_x":0.9053},{"n_new":64,"naive_tok_s":42.4824,"cached_tok_s":37.5037,"speedup_x":0.8828},{"n_new":128,"naive_tok_s":41.4084,"cached_tok_s":37.1785,"speedup_x":0.8978},{"n_new":256,"naive_tok_s":42.0738,"cached_tok_s":37.474,"speedup_x":0.8907},{"n_new":300,"naive_tok_s":40.868,"cached_tok_s":37.0089,"speedup_x":0.9056},{"n_new":340,"naive_tok_s":39.7324,"cached_tok_s":37.0287,"speedup_x":0.932},{"n_new":380,"naive_tok_s":38.916,"cached_tok_s":36.8588,"speedup_x":0.9471},{"n_new":400,"naive_tok_s":38.1182,"cached_tok_s":37.2182,"speedup_x":0.9764},{"n_new":440,"naive_tok_s":36.5464,"cached_tok_s":37.2371,"speedup_x":1.0189},{"n_new":512,"naive_tok_s":36.7368,"cached_tok_s":37.2403,"speedup_x":1.0137}],"crossover_probe":422.2,"crossover_fit":487.8,"eager_tok_s":37.6,"compiled_tok_s":76.3,"compiled_vs_eager_x":2.03,"eager_pct_ceiling":15.3,"compiled_pct_ceiling":31.2},"batch_scaling":[{"B":1,"ttft_ms":23.7891,"itl_p50_ms":24.2342,"agg_tok_s":41.2639,"per_req_tok_s":41.2639,"kv_mib":2.2383},{"B":2,"ttft_ms":23.0525,"itl_p50_ms":22.8359,"agg_tok_s":87.5813,"per_req_tok_s":43.7907,"kv_mib":4.4766},{"B":4,"ttft_ms":23.2757,"itl_p50_ms":23.2508,"agg_tok_s":172.0368,"per_req_tok_s":43.0092,"kv_mib":8.9531},{"B":8,"ttft_ms":40.0728,"itl_p50_ms":23.4775,"agg_tok_s":340.7523,"per_req_tok_s":42.594,"kv_mib":17.9062},{"B":16,"ttft_ms":90.6486,"itl_p50_ms":23.6453,"agg_tok_s":676.6677,"per_req_tok_s":42.2917,"kv_mib":35.8125},{"B":32,"ttft_ms":191.4218,"itl_p50_ms":23.8428,"agg_tok_s":1342.1249,"per_req_tok_s":41.9414,"kv_mib":71.625},{"B":64,"ttft_ms":389.9597,"itl_p50_ms":25.4358,"agg_tok_s":2516.1348,"per_req_tok_s":39.3146,"kv_mib":143.25}],"ceiling":[{"B":1,"ceiling_agg_tok_s":235.7229,"pct_of_ceiling":17.5053},{"B":2,"ceiling_agg_tok_s":470.3255,"pct_of_ceiling":18.6214},{"B":4,"ceiling_agg_tok_s":936.2013,"pct_of_ceiling":18.376},{"B":8,"ceiling_agg_tok_s":1854.8541,"pct_of_ceiling":18.3708},{"B":16,"ceiling_agg_tok_s":3641.4518,"pct_of_ceiling":18.5824},{"B":32,"ceiling_agg_tok_s":7024.4137,"pct_of_ceiling":19.1066},{"B":64,"ceiling_agg_tok_s":13117.6644,"pct_of_ceiling":19.1813}],"closed":[{"B":4,"policy":"static","goodput_tok_s":62.9911,"lat_mean_s":34.3301,"lat_p99_s":68.0571,"ttft_mean_s":30.1445},{"B":4,"policy":"continuous","goodput_tok_s":126.9653,"lat_mean_s":14.7017,"lat_p99_s":33.7651,"ttft_mean_s":12.741},{"B":8,"policy":"static","goodput_tok_s":98.7799,"lat_mean_s":24.5211,"lat_p99_s":43.3993,"ttft_mean_s":19.3062},{"B":8,"policy":"continuous","goodput_tok_s":217.9299,"lat_mean_s":7.8284,"lat_p99_s":19.6715,"ttft_mean_s":5.7754},{"B":16,"policy":"static","goodput_tok_s":167.7204,"lat_mean_s":16.4588,"lat_p99_s":25.5601,"ttft_mean_s":10.5213},{"B":16,"policy":"continuous","goodput_tok_s":344.5356,"lat_mean_s":4.7639,"lat_p99_s":12.4428,"ttft_mean_s":2.5311},{"B":32,"policy":"static","goodput_tok_s":205.0587,"lat_mean_s":15.813,"lat_p99_s":20.9058,"ttft_mean_s":6.32},{"B":32,"policy":"continuous","goodput_tok_s":354.3429,"lat_mean_s":4.3019,"lat_p99_s":12.0985,"ttft_mean_s":1.3735}],"load":[{"rate":0.5,"policy":"static","goodput_tok_s":34.1871,"lat_p50_s":4.2569,"lat_p99_s":12.6543,"ttft_p50_s":0.885,"utilization":0.6944},{"rate":0.5,"policy":"continuous","goodput_tok_s":34.8887,"lat_p50_s":1.007,"lat_p99_s":6.9814,"ttft_p50_s":0.032,"utilization":0.5976},{"rate":1.0,"policy":"static","goodput_tok_s":63.6202,"lat_p50_s":7.7877,"lat_p99_s":13.2489,"ttft_p50_s":1.9806,"utilization":0.9293},{"rate":1.0,"policy":"continuous","goodput_tok_s":66.4731,"lat_p50_s":1.0984,"lat_p99_s":7.605,"ttft_p50_s":0.0381,"utilization":0.8268},{"rate":2.0,"policy":"static","goodput_tok_s":109.0841,"lat_p50_s":8.8347,"lat_p99_s":13.9966,"ttft_p50_s":2.8212,"utilization":0.999},{"rate":2.0,"policy":"continuous","goodput_tok_s":120.7259,"lat_p50_s":1.1357,"lat_p99_s":7.7569,"ttft_p50_s":0.0435,"utilization":0.9761},{"rate":3.0,"policy":"static","goodput_tok_s":129.0729,"lat_p50_s":11.7286,"lat_p99_s":17.4368,"ttft_p50_s":5.2144,"utilization":1.0},{"rate":3.0,"policy":"continuous","goodput_tok_s":165.9901,"lat_p50_s":1.1648,"lat_p99_s":7.9495,"ttft_p50_s":0.0421,"utilization":1.0},{"rate":4.0,"policy":"static","goodput_tok_s":127.0968,"lat_p50_s":14.0414,"lat_p99_s":20.6727,"ttft_p50_s":7.2163,"utilization":1.0},{"rate":4.0,"policy":"continuous","goodput_tok_s":203.5405,"lat_p50_s":1.1316,"lat_p99_s":7.7828,"ttft_p50_s":0.0439,"utilization":1.0},{"rate":6.0,"policy":"static","goodput_tok_s":126.9011,"lat_p50_s":15.8889,"lat_p99_s":24.8117,"ttft_p50_s":8.9701,"utilization":1.0},{"rate":6.0,"policy":"continuous","goodput_tok_s":262.1511,"lat_p50_s":1.2568,"lat_p99_s":8.4307,"ttft_p50_s":0.0464,"utilization":1.0},{"rate":8.0,"policy":"static","goodput_tok_s":140.4195,"lat_p50_s":13.875,"lat_p99_s":23.4964,"ttft_p50_s":11.1307,"utilization":1.0},{"rate":8.0,"policy":"continuous","goodput_tok_s":306.2836,"lat_p50_s":1.4273,"lat_p99_s":8.5039,"ttft_p50_s":0.0525,"utilization":1.0}],"prefill_budget":[{"max_prefills":"1","goodput_tok_s":204.1741,"ttft_p50_s":0.0437,"ttft_p99_s":0.1529,"gap_p99_ms":58.1573,"gap_max_ms":68.312},{"max_prefills":"2","goodput_tok_s":204.1588,"ttft_p50_s":0.0439,"ttft_p99_s":0.0979,"gap_p99_ms":58.8856,"gap_max_ms":80.9846},{"max_prefills":"4","goodput_tok_s":206.3898,"ttft_p50_s":0.0446,"ttft_p99_s":0.0886,"gap_p99_ms":56.6158,"gap_max_ms":106.7144},{"max_prefills":"all","goodput_tok_s":203.6111,"ttft_p50_s":0.0431,"ttft_p99_s":0.0943,"gap_p99_ms":57.8822,"gap_max_ms":86.9226}],"mem":[{"budget_slots":2,"policy":"contiguous","pool_mib":17.1562,"goodput_tok_s":78.7435,"lat_p50_s":25.4243,"mean_running":1.9479,"kv_fill":0.3289},{"budget_slots":2,"policy":"paged","pool_mib":17.1562,"goodput_tok_s":132.9645,"lat_p50_s":12.9062,"mean_running":3.7571,"kv_fill":0.7524},{"budget_slots":4,"policy":"contiguous","pool_mib":34.3125,"goodput_tok_s":145.8426,"lat_p50_s":13.1919,"mean_running":3.7571,"kv_fill":0.3171},{"budget_slots":4,"policy":"paged","pool_mib":34.3125,"goodput_tok_s":227.1194,"lat_p50_s":6.4068,"mean_running":6.8223,"kv_fill":0.7524},{"budget_slots":8,"policy":"contiguous","pool_mib":68.625,"goodput_tok_s":248.6192,"lat_p50_s":6.7646,"mean_running":6.6295,"kv_fill":0.2798},{"budget_slots":8,"policy":"paged","pool_mib":68.625,"goodput_tok_s":378.6415,"lat_p50_s":3.5525,"mean_running":12.348,"kv_fill":0.7524},{"budget_slots":16,"policy":"contiguous","pool_mib":137.25,"goodput_tok_s":394.9242,"lat_p50_s":3.671,"mean_running":11.2314,"kv_fill":0.237},{"budget_slots":16,"policy":"paged","pool_mib":137.25,"goodput_tok_s":422.8182,"lat_p50_s":3.6145,"mean_running":14.8175,"kv_fill":0.7524}],"kv_breakdown":[{"budget_slots":2,"policy":"contiguous","stored":32.8852,"reserved_empty":67.1148,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":2,"policy":"paged","stored":63.7784,"reserved_empty":19.1889,"rounding":1.8046,"not_handed_out":15.2282},{"budget_slots":4,"policy":"contiguous","stored":31.7149,"reserved_empty":68.2851,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":4,"policy":"paged","stored":57.589,"reserved_empty":17.3267,"rounding":1.6295,"not_handed_out":23.4549},{"budget_slots":8,"policy":"contiguous","stored":27.9808,"reserved_empty":72.0192,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":8,"policy":"paged","stored":52.1163,"reserved_empty":15.6801,"rounding":1.4746,"not_handed_out":30.7289},{"budget_slots":16,"policy":"contiguous","stored":23.7018,"reserved_empty":76.2982,"rounding":0.0,"not_handed_out":0.0},{"budget_slots":16,"policy":"paged","stored":31.2698,"reserved_empty":9.4081,"rounding":0.8848,"not_handed_out":58.4374}],"block_size":[{"block_size":8.0,"rounding_pct":1.1777,"kv_fill":0.7597,"goodput_tok_s":354.9992,"step_vs_contiguous_x":1.0993},{"block_size":16.0,"rounding_pct":2.1288,"kv_fill":0.7524,"goodput_tok_s":356.1472,"step_vs_contiguous_x":1.0954},{"block_size":32.0,"rounding_pct":4.5205,"kv_fill":0.734,"goodput_tok_s":356.9925,"step_vs_contiguous_x":1.0925},{"block_size":64.0,"rounding_pct":8.6285,"kv_fill":0.7024,"goodput_tok_s":357.4211,"step_vs_contiguous_x":1.0908},{"block_size":128.0,"rounding_pct":18.5834,"kv_fill":0.6259,"goodput_tok_s":356.1517,"step_vs_contiguous_x":1.0937},{"block_size":256.0,"rounding_pct":33.7014,"kv_fill":0.5096,"goodput_tok_s":356.8514,"step_vs_contiguous_x":1.0917}],"block_size_ref":{"goodput_tok_s":391.7066,"itl_p50_ms":24.9584,"kv_fill":0.237},"vllm_load":[{"system":"vLLM","size":"0.5B","rate":1.0,"tpot_p50_ms":5.8664,"ttft_p50_s":0.0231,"goodput_tok_s":71.596,"req_s":1.0689,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"0.5B","rate":1.0,"tpot_p50_ms":10.5745,"ttft_p50_s":0.0421,"goodput_tok_s":70.2442,"req_s":1.0487,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":1.0,"tpot_p50_ms":32.3476,"ttft_p50_s":38.969,"goodput_tok_s":1.7228,"req_s":0.4537,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"0.5B","rate":1.0,"tpot_p50_ms":31.2094,"ttft_p50_s":4.3364,"goodput_tok_s":22.3782,"req_s":0.9036,"slo_attainment":0.2812},{"system":"engine graph (HTTP)","size":"0.5B","rate":2.0,"tpot_p50_ms":12.1324,"ttft_p50_s":0.0455,"goodput_tok_s":133.437,"req_s":1.9921,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":2.0,"tpot_p50_ms":32.3907,"ttft_p50_s":51.5587,"goodput_tok_s":1.7387,"req_s":0.4579,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"0.5B","rate":2.0,"tpot_p50_ms":31.0367,"ttft_p50_s":12.6527,"goodput_tok_s":4.3835,"req_s":1.1545,"slo_attainment":0.0625},{"system":"vLLM","size":"0.5B","rate":2.0,"tpot_p50_ms":5.76,"ttft_p50_s":0.0224,"goodput_tok_s":140.1215,"req_s":2.0918,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":4.0,"tpot_p50_ms":32.4588,"ttft_p50_s":58.3616,"goodput_tok_s":1.7351,"req_s":0.457,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"0.5B","rate":4.0,"tpot_p50_ms":31.0113,"ttft_p50_s":15.0478,"goodput_tok_s":6.5767,"req_s":1.3113,"slo_attainment":0.0938},{"system":"vLLM","size":"0.5B","rate":4.0,"tpot_p50_ms":5.8431,"ttft_p50_s":0.0236,"goodput_tok_s":268.6205,"req_s":4.0102,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"0.5B","rate":4.0,"tpot_p50_ms":18.3699,"ttft_p50_s":0.0555,"goodput_tok_s":228.279,"req_s":3.4079,"slo_attainment":1.0},{"system":"HF static batch 8","size":"0.5B","rate":8.0,"tpot_p50_ms":30.8211,"ttft_p50_s":19.3649,"goodput_tok_s":7.5507,"req_s":1.1786,"slo_attainment":0.1406},{"system":"vLLM","size":"0.5B","rate":8.0,"tpot_p50_ms":6.1205,"ttft_p50_s":0.0237,"goodput_tok_s":494.7226,"req_s":7.3856,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"0.5B","rate":8.0,"tpot_p50_ms":50.3989,"ttft_p50_s":0.108,"goodput_tok_s":296.9662,"req_s":4.4334,"slo_attainment":1.0},{"system":"HF sequential","size":"0.5B","rate":8.0,"tpot_p50_ms":32.2049,"ttft_p50_s":61.4613,"goodput_tok_s":0.6102,"req_s":0.4594,"slo_attainment":0.0469},{"system":"vLLM","size":"1.5B","rate":1.0,"tpot_p50_ms":16.7465,"ttft_p50_s":0.0637,"goodput_tok_s":68.3627,"req_s":1.0206,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"1.5B","rate":1.0,"tpot_p50_ms":24.4735,"ttft_p50_s":0.0794,"goodput_tok_s":66.7191,"req_s":0.996,"slo_attainment":1.0},{"system":"HF sequential","size":"1.5B","rate":1.0,"tpot_p50_ms":38.4062,"ttft_p50_s":51.5622,"goodput_tok_s":1.4565,"req_s":0.3836,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"1.5B","rate":1.0,"tpot_p50_ms":36.9303,"ttft_p50_s":5.9374,"goodput_tok_s":6.7406,"req_s":0.8296,"slo_attainment":0.1562},{"system":"engine graph (HTTP)","size":"1.5B","rate":2.0,"tpot_p50_ms":36.4303,"ttft_p50_s":0.1136,"goodput_tok_s":114.153,"req_s":1.7042,"slo_attainment":1.0},{"system":"HF sequential","size":"1.5B","rate":2.0,"tpot_p50_ms":38.4796,"ttft_p50_s":63.8568,"goodput_tok_s":1.4616,"req_s":0.385,"slo_attainment":0.0625},{"system":"HF static batch 8","size":"1.5B","rate":2.0,"tpot_p50_ms":37.2539,"ttft_p50_s":12.1085,"goodput_tok_s":5.1918,"req_s":1.0351,"slo_attainment":0.0938},{"system":"vLLM","size":"1.5B","rate":2.0,"tpot_p50_ms":16.5025,"ttft_p50_s":0.0515,"goodput_tok_s":130.181,"req_s":1.9434,"slo_attainment":1.0},{"system":"HF sequential","size":"1.5B","rate":4.0,"tpot_p50_ms":38.2847,"ttft_p50_s":69.375,"goodput_tok_s":0.5134,"req_s":0.3866,"slo_attainment":0.0469},{"system":"HF static batch 8","size":"1.5B","rate":4.0,"tpot_p50_ms":37.0713,"ttft_p50_s":21.6454,"goodput_tok_s":6.3964,"req_s":1.1831,"slo_attainment":0.1094},{"system":"vLLM","size":"1.5B","rate":4.0,"tpot_p50_ms":16.8882,"ttft_p50_s":0.0536,"goodput_tok_s":233.5703,"req_s":3.4869,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"1.5B","rate":4.0,"tpot_p50_ms":96.1867,"ttft_p50_s":0.1864,"goodput_tok_s":116.2814,"req_s":2.2599,"slo_attainment":0.5312},{"system":"HF static batch 8","size":"1.5B","rate":8.0,"tpot_p50_ms":37.3654,"ttft_p50_s":25.4038,"goodput_tok_s":5.4281,"req_s":0.9364,"slo_attainment":0.1094},{"system":"vLLM","size":"1.5B","rate":8.0,"tpot_p50_ms":18.2296,"ttft_p50_s":0.0584,"goodput_tok_s":379.4284,"req_s":5.6644,"slo_attainment":1.0},{"system":"engine graph (HTTP)","size":"1.5B","rate":8.0,"tpot_p50_ms":143.2607,"ttft_p50_s":0.6315,"goodput_tok_s":80.3562,"req_s":2.4832,"slo_attainment":0.1875},{"system":"HF sequential","size":"1.5B","rate":8.0,"tpot_p50_ms":39.2607,"ttft_p50_s":75.7249,"goodput_tok_s":0.3771,"req_s":0.3771,"slo_attainment":0.0312}],"s12_modes":[{"size":"0.5B","rate":4.0,"mode":"eager","tpot_p50_ms":31.6084,"tpot_p99_ms":42.1017,"goodput_tok_s":205.102,"tpot_vs_eager":1.0},{"size":"0.5B","rate":4.0,"mode":"static","tpot_p50_ms":31.8174,"tpot_p99_ms":43.2673,"goodput_tok_s":204.1707,"tpot_vs_eager":1.0066},{"size":"0.5B","rate":4.0,"mode":"graph","tpot_p50_ms":17.5688,"tpot_p99_ms":39.1192,"goodput_tok_s":230.9901,"tpot_vs_eager":0.5558},{"size":"1.5B","rate":4.0,"mode":"eager","tpot_p50_ms":43.1734,"tpot_p99_ms":76.2986,"goodput_tok_s":187.9102,"tpot_vs_eager":1.0},{"size":"1.5B","rate":4.0,"mode":"static","tpot_p50_ms":98.6517,"tpot_p99_ms":150.5199,"goodput_tok_s":114.3997,"tpot_vs_eager":2.285},{"size":"1.5B","rate":4.0,"mode":"graph","tpot_p50_ms":98.6416,"tpot_p99_ms":146.8726,"goodput_tok_s":116.6439,"tpot_vs_eager":2.2848}],"s13_http":[{"size":"0.5B","rate":1.0,"tpot_p50_ms":9.9499,"ttft_p50_s":0.0464,"goodput_tok_s":70.4178,"slo_attainment":1.0},{"size":"0.5B","rate":2.0,"tpot_p50_ms":11.0976,"ttft_p50_s":0.0486,"goodput_tok_s":135.1358,"slo_attainment":1.0},{"size":"0.5B","rate":4.0,"tpot_p50_ms":12.4816,"ttft_p50_s":0.0512,"goodput_tok_s":248.345,"slo_attainment":1.0},{"size":"0.5B","rate":8.0,"tpot_p50_ms":17.0171,"ttft_p50_s":0.0606,"goodput_tok_s":413.2404,"slo_attainment":1.0},{"size":"1.5B","rate":1.0,"tpot_p50_ms":21.5588,"ttft_p50_s":0.0775,"goodput_tok_s":67.4401,"slo_attainment":1.0},{"size":"1.5B","rate":2.0,"tpot_p50_ms":24.8277,"ttft_p50_s":0.084,"goodput_tok_s":124.3885,"slo_attainment":1.0},{"size":"1.5B","rate":4.0,"tpot_p50_ms":32.1774,"ttft_p50_s":0.1019,"goodput_tok_s":206.5353,"slo_attainment":1.0},{"size":"1.5B","rate":8.0,"tpot_p50_ms":66.0782,"ttft_p50_s":0.1685,"goodput_tok_s":282.7812,"slo_attainment":0.9844}],"s13_ablation":[{"size":"0.5B","variant":"V0","system":"V0 expand, eager","tpot_p50_ms":59.1245,"goodput_tok_s":251.7202,"slo_attainment":1.0},{"size":"0.5B","variant":"V1","system":"V1 expand, graph","tpot_p50_ms":62.0796,"goodput_tok_s":279.8461,"slo_attainment":1.0},{"size":"0.5B","variant":"V2","system":"V2 fold, eager","tpot_p50_ms":60.5334,"goodput_tok_s":246.3446,"slo_attainment":1.0},{"size":"0.5B","variant":"V3","system":"V3 fold, graph","tpot_p50_ms":20.9988,"goodput_tok_s":404.436,"slo_attainment":1.0},{"size":"1.5B","variant":"V0","system":"V0 expand, eager","tpot_p50_ms":105.7579,"goodput_tok_s":155.1462,"slo_attainment":0.4375},{"size":"1.5B","variant":"V1","system":"V1 expand, graph","tpot_p50_ms":160.4403,"goodput_tok_s":32.3755,"slo_attainment":0.0781},{"size":"1.5B","variant":"V2","system":"V2 fold, eager","tpot_p50_ms":85.3825,"goodput_tok_s":207.9019,"slo_attainment":0.875},{"size":"1.5B","variant":"V3","system":"V3 fold, graph","tpot_p50_ms":84.2228,"goodput_tok_s":240.1321,"slo_attainment":0.8281},{"size":"1.5B","variant":"V4","system":"V4 expand, graph, fine buckets","tpot_p50_ms":119.2121,"goodput_tok_s":149.7537,"slo_attainment":0.375},{"size":"0.5B","variant":"V6","system":"V6 all three levers","tpot_p50_ms":17.1584,"goodput_tok_s":424.5524,"slo_attainment":1.0},{"size":"1.5B","variant":"V5","system":"V5 expand, graph, eager fallback","tpot_p50_ms":105.0367,"goodput_tok_s":159.7258,"slo_attainment":0.4375},{"size":"1.5B","variant":"V6","system":"V6 all three levers","tpot_p50_ms":72.301,"goodput_tok_s":284.7278,"slo_attainment":0.9844}],"s14_http":[{"size":"0.5B","rate":1.0,"tpot_p50_ms":8.6982,"ttft_p50_s":0.0396,"goodput_tok_s":70.8018,"slo_attainment":1.0},{"size":"0.5B","rate":2.0,"tpot_p50_ms":9.3595,"ttft_p50_s":0.0413,"goodput_tok_s":136.5738,"slo_attainment":1.0},{"size":"0.5B","rate":4.0,"tpot_p50_ms":10.3434,"ttft_p50_s":0.0428,"goodput_tok_s":254.2633,"slo_attainment":1.0},{"size":"0.5B","rate":8.0,"tpot_p50_ms":13.1807,"ttft_p50_s":0.0483,"goodput_tok_s":437.9402,"slo_attainment":1.0},{"size":"1.5B","rate":1.0,"tpot_p50_ms":20.8777,"ttft_p50_s":0.076,"goodput_tok_s":67.4072,"slo_attainment":1.0},{"size":"1.5B","rate":2.0,"tpot_p50_ms":22.7304,"ttft_p50_s":0.0766,"goodput_tok_s":124.3571,"slo_attainment":1.0},{"size":"1.5B","rate":4.0,"tpot_p50_ms":27.7951,"ttft_p50_s":0.084,"goodput_tok_s":212.6479,"slo_attainment":1.0},{"size":"1.5B","rate":8.0,"tpot_p50_ms":43.3393,"ttft_p50_s":0.1297,"goodput_tok_s":310.8971,"slo_attainment":1.0}],"s14_ablation":[{"size":"0.5B","variant":"B0","system":"B0 Part 11 graph, the baseline","tpot_p50_ms":46.7125,"goodput_tok_s":313.6821,"slo_attainment":1.0},{"size":"0.5B","variant":"K0","system":"K0 Part 12 best, gather","tpot_p50_ms":14.3714,"goodput_tok_s":435.718,"slo_attainment":1.0},{"size":"0.5B","variant":"K1","system":"K1 in place, one program per head","tpot_p50_ms":12.8686,"goodput_tok_s":446.5667,"slo_attainment":1.0},{"size":"0.5B","variant":"K2","system":"K2 in place, grouped by key-value head","tpot_p50_ms":13.6808,"goodput_tok_s":440.0638,"slo_attainment":1.0},{"size":"0.5B","variant":"K3","system":"K3 best kernel, powers of two","tpot_p50_ms":13.5479,"goodput_tok_s":437.1111,"slo_attainment":1.0},{"size":"1.5B","variant":"B0","system":"B0 Part 11 graph, the baseline","tpot_p50_ms":139.3019,"goodput_tok_s":103.6612,"slo_attainment":0.2188},{"size":"1.5B","variant":"K0","system":"K0 Part 12 best, gather","tpot_p50_ms":57.5877,"goodput_tok_s":301.2663,"slo_attainment":1.0},{"size":"1.5B","variant":"K1","system":"K1 in place, one program per head","tpot_p50_ms":43.5977,"goodput_tok_s":323.5736,"slo_attainment":1.0},{"size":"1.5B","variant":"K2","system":"K2 in place, grouped by key-value head","tpot_p50_ms":45.5958,"goodput_tok_s":316.6792,"slo_attainment":1.0},{"size":"1.5B","variant":"K3","system":"K3 best kernel, powers of two","tpot_p50_ms":46.4207,"goodput_tok_s":309.5154,"slo_attainment":1.0},{"size":"1.5B","variant":"K4","system":"K4 best kernel, no fallback","tpot_p50_ms":38.187,"goodput_tok_s":320.6286,"slo_attainment":1.0}],"latency":[{"size":"0.5B","workload":"copy","system":"vLLM","tpot_ms":6.1593,"ttft_ms":21.1046,"speedup_vs_hf":5.2548},{"size":"0.5B","workload":"code","system":"vLLM","tpot_ms":6.2481,"ttft_ms":20.6605,"speedup_vs_hf":5.2455},{"size":"0.5B","workload":"open","system":"vLLM","tpot_ms":6.2959,"ttft_ms":20.2534,"speedup_vs_hf":5.1502},{"size":"0.5B","workload":"copy","system":"engine graph (HTTP)","tpot_ms":9.4433,"ttft_ms":43.1383,"speedup_vs_hf":3.4274},{"size":"0.5B","workload":"code","system":"engine graph (HTTP)","tpot_ms":9.3925,"ttft_ms":43.2714,"speedup_vs_hf":3.4895},{"size":"0.5B","workload":"open","system":"engine graph (HTTP)","tpot_ms":9.0949,"ttft_ms":41.6699,"speedup_vs_hf":3.5652},{"size":"0.5B","workload":"copy","system":"HF sequential","tpot_ms":32.3662,"ttft_ms":41.0396,"speedup_vs_hf":1.0},{"size":"0.5B","workload":"code","system":"HF sequential","tpot_ms":32.7746,"ttft_ms":41.4487,"speedup_vs_hf":1.0},{"size":"0.5B","workload":"open","system":"HF sequential","tpot_ms":32.425,"ttft_ms":41.2889,"speedup_vs_hf":1.0},{"size":"1.5B","workload":"copy","system":"vLLM","tpot_ms":17.2684,"ttft_ms":29.9739,"speedup_vs_hf":2.2701},{"size":"1.5B","workload":"code","system":"vLLM","tpot_ms":19.5091,"ttft_ms":29.2705,"speedup_vs_hf":1.9954},{"size":"1.5B","workload":"open","system":"vLLM","tpot_ms":20.8093,"ttft_ms":28.7361,"speedup_vs_hf":1.8545},{"size":"1.5B","workload":"copy","system":"engine graph (HTTP)","tpot_ms":19.1721,"ttft_ms":75.7797,"speedup_vs_hf":2.0447},{"size":"1.5B","workload":"code","system":"engine graph (HTTP)","tpot_ms":19.2571,"ttft_ms":74.6087,"speedup_vs_hf":2.0215},{"size":"1.5B","workload":"open","system":"engine graph (HTTP)","tpot_ms":18.8355,"ttft_ms":63.2679,"speedup_vs_hf":2.0488},{"size":"1.5B","workload":"copy","system":"HF sequential","tpot_ms":39.2009,"ttft_ms":50.9801,"speedup_vs_hf":1.0},{"size":"1.5B","workload":"code","system":"HF sequential","tpot_ms":38.9277,"ttft_ms":50.137,"speedup_vs_hf":1.0},{"size":"1.5B","workload":"open","system":"HF sequential","tpot_ms":38.5904,"ttft_ms":49.0461,"speedup_vs_hf":1.0}],"capacity":[{"size":"0.5B","system":"vLLM","capacity_req_s":8.0,"target":0.9},{"size":"0.5B","system":"engine graph (HTTP)","capacity_req_s":8.0,"target":0.9},{"size":"0.5B","system":"HF sequential","capacity_req_s":null,"target":0.9},{"size":"0.5B","system":"HF static batch 8","capacity_req_s":null,"target":0.9},{"size":"1.5B","system":"vLLM","capacity_req_s":8.0,"target":0.9},{"size":"1.5B","system":"engine graph (HTTP)","capacity_req_s":2.0,"target":0.9},{"size":"1.5B","system":"HF sequential","capacity_req_s":null,"target":0.9},{"size":"1.5B","system":"HF static batch 8","capacity_req_s":null,"target":0.9}],"slo":{"ttft_s":2.0,"tpot_s":0.1}};
 // Pure simulation code. No DOM. Inlined into index.html by build.py and also unit-checked in node.
 // Constants are calibrated to the T4 measurements in chizkidd/mini-vllm (stage 3 and stage 4).
 
@@ -217,6 +246,7 @@ const CAL = {
   // contexts and more scheduler work, so the fitted per-sequence cost is higher.
   stepBase: 24, stepPerSeq: 0.3,       // decode step (ms) = base + perSeq * active sequences
   prefillPerTok: 0.12, prefillFloor: 30, // prefill (ms) = max(floor, perTok * padded prompt tokens)
+  slotMaxTokens: 732,                  // Stage 5 contiguous slot reservation (tokens)
 };
 const stepMs = (n) => CAL.stepBase + CAL.stepPerSeq * n;
 const prefillMs = (tokens) => Math.max(CAL.prefillFloor, CAL.prefillPerTok * tokens);
@@ -243,48 +273,72 @@ function makeTrace({ n = 64, rate = 4, pLong = 0.25, seed = 1, closed = false } 
 // Static batching: take up to B queued requests, prefill them padded to the longest prompt, then decode until the
 // longest output in the batch is done. Slots of finished requests sit idle until the whole batch ends.
 function simStatic(reqs, B) {
-  const q = reqs.map((r) => ({ ...r })), items = []; let t = 0, i = 0;
+  const q = reqs.map((r) => ({ ...r })), items = []; let t = 0, i = 0, maxItlMs = 0;
   while (i < q.length) {
     if (q[i].arrival > t) t = q[i].arrival;
     const batch = []; while (i < q.length && batch.length < B && q[i].arrival <= t) batch.push(q[i++]);
     const maxP = Math.max(...batch.map((r) => r.prompt)), maxO = Math.max(...batch.map((r) => r.out));
     const pf = prefillMs(batch.length * maxP) / 1000, st = stepMs(batch.length) / 1000;
+    maxItlMs = Math.max(maxItlMs, st * 1000);
     const start = t, decodeStart = t + pf, end = decodeStart + maxO * st;
     batch.forEach((r, k) => items.push({ id: r.id, slot: k, arrival: r.arrival, start, decodeStart,
       done: decodeStart + r.out * st, hold: end, out: r.out, isLong: r.isLong }));
     t = end;
   }
-  return summarize(items, B, t);
+  return summarize(items, B, t, maxItlMs, 0);
 }
 
-// Continuous batching: every iteration, admit queued requests into free slots, then one decode step for all active.
-function simContinuous(reqs, B) {
-  const q = reqs.map((r) => ({ ...r })), items = [], slots = new Array(B).fill(null); let t = 0, i = 0, active = 0;
+// Continuous batching: every iteration, admit queued requests into free slots subject to optional
+// prefill budget (maxPrefills) and KV memory pool capacity (kvSlots, paged, blockSize), then one decode step.
+function simContinuous(reqs, B, opts = {}) {
+  const maxPrefills = opts.maxPrefills > 0 ? opts.maxPrefills : Infinity;
+  const kvPool = opts.kvSlots > 0 ? opts.kvSlots * CAL.slotMaxTokens : Infinity;
+  const paged = opts.paged !== false;
+  const blockSize = opts.blockSize || 16;
+  const kvNeed = (r) => (paged ? Math.ceil(Math.min(CAL.slotMaxTokens, r.prompt + r.out) / blockSize) * blockSize : CAL.slotMaxTokens);
+
+  const q = reqs.map((r) => ({ ...r })), items = [], slots = new Array(B).fill(null);
+  let t = 0, i = 0, active = 0, kvUsed = 0, maxItlMs = 0, kvBlockedSteps = 0;
+
   while (i < q.length || active > 0) {
     if (active === 0 && i < q.length && q[i].arrival > t) t = q[i].arrival;
     let admitTok = 0; const admitted = [];
-    for (let s = 0; s < B && i < q.length && q[i].arrival <= t; s++) {
+    const hadRunning = active > 0;
+    let blockedByKv = false;
+    for (let s = 0; s < B && i < q.length && q[i].arrival <= t && admitted.length < maxPrefills; s++) {
       if (slots[s]) continue;
-      const r = q[i++]; admitTok += r.prompt;
-      slots[s] = { r, left: r.out, start: t, decodeStart: 0 }; active++; admitted.push(slots[s]);
+      const r = q[i], need = kvNeed(r);
+      if (kvUsed + need > kvPool) { blockedByKv = true; break; }
+      i++; admitTok += r.prompt; kvUsed += need;
+      slots[s] = { r, left: r.out, start: t, decodeStart: 0, kv: need }; active++; admitted.push(slots[s]);
     }
-    if (admitted.length) { const pf = prefillMs(admitTok) / 1000; t += pf; admitted.forEach((a) => { a.decodeStart = t; }); }
-    t += stepMs(active) / 1000;
-    for (let s = 0; s < B; s++) { const a = slots[s]; if (!a) continue;
-      if (--a.left === 0) { items.push({ id: a.r.id, slot: s, arrival: a.r.arrival, start: a.start, decodeStart: a.decodeStart,
-        done: t, hold: t, out: a.r.out, isLong: a.r.isLong }); slots[s] = null; active--; } }
+    if (blockedByKv) kvBlockedSteps++;
+    let pfMs = 0;
+    if (admitted.length) { pfMs = prefillMs(admitTok); t += pfMs / 1000; admitted.forEach((a) => { a.decodeStart = t; }); }
+    const stMs = stepMs(active);
+    if (hadRunning) maxItlMs = Math.max(maxItlMs, pfMs + stMs);
+    else if (active > 0) maxItlMs = Math.max(maxItlMs, stMs);
+    t += stMs / 1000;
+    for (let s = 0; s < B; s++) {
+      const a = slots[s]; if (!a) continue;
+      if (--a.left === 0) {
+        items.push({ id: a.r.id, slot: s, arrival: a.r.arrival, start: a.start, decodeStart: a.decodeStart,
+          done: t, hold: t, out: a.r.out, isLong: a.r.isLong });
+        kvUsed -= a.kv; slots[s] = null; active--;
+      }
+    }
   }
-  return summarize(items, B, t);
+  return summarize(items, B, t, maxItlMs, kvBlockedSteps);
 }
 
 function pct(arr, p) { const a = [...arr].sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length))] : 0; }
-function summarize(items, B, makespan) {
+function summarize(items, B, makespan, maxItlMs, kvBlockedSteps) {
   items.sort((a, b) => a.id - b.id);
   const toks = items.reduce((s, x) => s + x.out, 0);
   const lat = items.map((x) => x.done - x.arrival), ttft = items.map((x) => x.decodeStart - x.arrival);
   const heldLane = items.reduce((s, x) => s + (x.hold - x.start), 0), usefulLane = items.reduce((s, x) => s + (x.done - x.start), 0);
   return { items, B, makespan, goodput: toks / makespan, latP50: pct(lat, .5), latP99: pct(lat, .99), ttftP50: pct(ttft, .5),
-    laneUse: usefulLane / (B * makespan), laneHeld: heldLane / (B * makespan) };
+    laneUse: usefulLane / (B * makespan), laneHeld: heldLane / (B * makespan), maxItlMs, kvBlockedSteps };
 }
 
 
@@ -358,33 +412,45 @@ function lineChart(svg, series, { w = 900, h = 340, xlog = false, ylog = false, 
 /* =====================================================================
    1. BATCHING LAB
    ===================================================================== */
-let trace, resS, resC, tNow = 0, tMax = 1, paused = window.mlViz ? window.mlViz.reducedMotion() : false, speed = 6, seed = 7, last = 0;
+let trace, resS, resC, tNow = 0, tMax = 1, paused = window.mlViz ? window.mlViz.reducedMotion() : false, speed = 6, seed = 7, last = 0, cPf = 0, cKv = 'none';
 const G = { w: 1000, left: 8, right: 8, top: 16, qh: 34 };
 const syncPlay = () => { $('play').textContent = paused ? 'Play' : 'Pause'; };
+
+function simOpts() {
+  const o = {};
+  if (cPf > 0) o.maxPrefills = cPf;
+  if (cKv === 'contig4') { o.kvSlots = 4; o.paged = false; }
+  else if (cKv === 'paged4') { o.kvSlots = 4; o.paged = true; }
+  return o;
+}
 
 function runSims() {
   const B = +$('cB').value, rate = +$('cR').value, pl = +$('cL').value / 100;
   $('vB').textContent = B; $('vR').textContent = rate; $('vL').textContent = Math.round(pl * 100) + '%';
   trace = makeTrace({ n: 64, rate, pLong: pl, seed });
-  resS = simStatic(trace, B); resC = simContinuous(trace, B);
+  resS = simStatic(trace, B); resC = simContinuous(trace, B, simOpts());
   tMax = Math.max(resS.makespan, resC.makespan) * 1.02;
   $('scrub').max = 1000;
   tNow = paused ? tMax : 0; last = performance.now();
   drawKpis(); drawGantt($('gS'), resS, 'static', 'clipS'); drawGantt($('gC'), resC, 'continuous', 'clipC'); setHead(); frame(true);
 }
 function drawKpis() {
-  const k = (r, c) => kpi(c, fmt(r.goodput, 0) + ' <span style="font-size:.8rem;font-weight:500">tok/s</span>', 'goodput') +
+  const k = (r, c, extra) => kpi(c, fmt(r.goodput, 0) + ' <span style="font-size:.8rem;font-weight:500">tok/s</span>', 'goodput') +
     kpi('', fmt(r.latP50, 1) + ' s', 'median latency') + kpi('', fmt(r.latP99, 1) + ' s', '99th pct latency') +
     kpi('', fmt(r.ttftP50, 2) + ' s', 'median wait to first token') +
     kpi('', fmt(Math.max(0, (r.laneHeld - r.laneUse)) * 100, 0) + '%', 'slot-time wasted on finished requests') +
-    kpi('', fmt(r.makespan, 0) + ' s', 'time to drain all 64');
-  $('kS').innerHTML = k(resS, 'a'); $('kC').innerHTML = k(resC, 'b');
+    (extra || kpi('', fmt(r.makespan, 0) + ' s', 'time to drain all 64'));
+  $('kS').innerHTML = k(resS, 'a');
+  $('kC').innerHTML = k(resC, 'b', kpi('', fmt(resC.maxItlMs, 0) + ' ms', 'max decode stall (prefill + step)'));
 }
 function setHead() {
   const g = resC.goodput / resS.goodput, l = resS.latP50 / resC.latP50;
+  const extras = [];
+  if (cPf > 0) extras.push(`Prefill budget (${cPf}/step) caps max decode stall to <b>${fmt(resC.maxItlMs, 0)} ms</b> (in Stage 4 T4 runs, 1 prefill/step cut max gap from 107 ms to 68 ms).`);
+  if (cKv !== 'none') extras.push(`KV cap (${cKv === 'paged4' ? '4 slots paged' : '4 slots contiguous'}) blocked admission on <b>${resC.kvBlockedSteps}</b> steps.`);
   $('headline').innerHTML = `At these settings continuous batching delivers <b>${fmt(g, 2)}x the goodput</b> and a <b>${fmt(l, 1)}x lower median latency</b>. ` +
-    (g < 1.08 ? 'At this arrival rate the GPU is mostly idle, so both policies keep up and the difference is small. Raise the arrival rate.' :
-      'Static batching keeps a slot reserved until the longest reply in its batch finishes, so short replies leave hatched holes.');
+    (extras.length ? extras.join(' ') : (g < 1.08 ? 'At this arrival rate the GPU is mostly idle, so both policies keep up and the difference is small. Raise the arrival rate.' :
+      'Static batching keeps a slot reserved until the longest reply in its batch finishes, so short replies leave hatched holes.'));
 }
 function drawGantt(svg, res, policy, clipId) {
   const B = res.B, laneH = Math.max(6, Math.min(18, 250 / B)), H = G.top + B * laneH + 26 + G.qh + 6;
@@ -431,6 +497,12 @@ $('play').onclick = () => { if (tNow >= tMax) tNow = 0; paused = !paused; syncPl
 $('scrub').oninput = (e) => { tNow = +e.target.value / 1000 * tMax; paused = true; syncPlay(); frame(true); };
 $('speed').querySelectorAll('button').forEach((b) => b.onclick = () => {
   speed = +b.dataset.s; $('speed').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+});
+$('cPf').querySelectorAll('button').forEach((b) => b.onclick = () => {
+  cPf = +b.dataset.v; $('cPf').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); runSims();
+});
+$('cKv').querySelectorAll('button').forEach((b) => b.onclick = () => {
+  cKv = b.dataset.v; $('cKv').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); runSims();
 });
 
 // measured chart (closed loop + open loop D.load) + calibration table
@@ -641,6 +713,20 @@ function drawRoof() {
     note = `GPU figures other than the T4 are spec-sheet numbers and the ceiling ignores kernel overhead, so real engines land below this line. The shape is what matters: the line climbs steeply while each extra request is nearly free (weights are shared), then bends as ${bound === 'compute-bound' ? 'compute saturates' : 'KV traffic grows'} and finally stops where the KV cache fills memory. ${GPUS[$('rGpu').value].note}.`;
   }
   $('rNote').innerHTML = note;
+  drawGpuPred(c);
+}
+function drawGpuPred(c) {
+  const keys = ['T4 (16 GB), as measured', 'A100 (80 GB)', 'H100 SXM (80 GB)'];
+  let t = '<tr><th>GPU</th><th>bandwidth</th><th>FP16 peak</th><th>ridge (FLOP/B)</th><th>max seqs fit</th><th>B=1 ceiling</th><th>compute ceiling</th><th>status</th></tr>';
+  keys.forEach((k) => {
+    const g = GPUS[k], bw = g.bw * 1e9, peak = g.tf * 1e12, ridge = peak / bw;
+    const bud = g.mem * 1e9 * 0.9 - c.Wbytes, maxS = bud > 0 ? Math.floor(bud / c.kvSeq) : 0;
+    const b1 = maxS >= 1 ? Math.min(1 / ((c.Wbytes + c.kvSeq) / bw), peak / c.flopTok) : 0;
+    const comp = peak / c.flopTok;
+    const status = k.startsWith('T4') ? 'measured (14 stages)' : 'planned (next phase)';
+    t += `<tr><td>${k.replace(', as measured', '')}</td><td>${fmt(g.bw, 0)} GB/s</td><td>${fmt(g.tf, 0)} TF</td><td>${fmt(ridge, 0)}</td><td>${maxS > 0 ? fmt(maxS, 0) : 'OOM'}</td><td>${b1 > 0 ? fmt(b1, 0) + ' tok/s' : 'OOM'}</td><td>${fmt(comp, 0)} tok/s</td><td class="small">${status}</td></tr>`;
+  });
+  $('gpuPredTable').innerHTML = t;
 }
 function drawXover() {
   if (!D.kv_crossover) return;
@@ -658,35 +744,92 @@ function drawXover() {
 }
 
 /* =====================================================================
-   4. ENGINE VS VLLM
+   4. ENGINE VS VLLM (STAGES 12 -> 13 -> 14)
    ===================================================================== */
-const SYS = [
-  { k: 'vLLM', c: 'var(--c-c)', n: 'vLLM' }, { k: 'engine graph (HTTP)', c: 'var(--c-b)', n: 'mini-vllm' },
-  { k: 'HF static batch 8', c: 'var(--c-a)', n: 'HF batch 8' }, { k: 'HF sequential', c: 'var(--c-d)', n: 'HF one by one' },
-];
-let vSize = '1.5B', vMetric = 'tpot', vLog = true;
+let vSize = '1.5B', vMetric = 'tpot', vLog = true, vHf = 'eng', vAbl = 's13';
 function initVs() {
-  const wire = (id, set) => $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { set(b.dataset.v); $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); drawVs(); });
-  wire('segSize', (v) => { vSize = v; }); wire('segMetric', (v) => { vMetric = v; }); wire('segScale', (v) => { vLog = v === 'log'; });
-  drawVs(); drawSingle(); drawCap();
+  const wire = (id, set, fn) => $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { set(b.dataset.v); $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); (fn || drawVs)(); });
+  wire('segSize', (v) => { vSize = v; }, () => { drawVs(); drawAbl(); });
+  wire('segMetric', (v) => { vMetric = v; });
+  wire('segScale', (v) => { vLog = v === 'log'; });
+  wire('segHf', (v) => { vHf = v; });
+  wire('segGpu', (v) => { $('gpuNextNote').hidden = v === 't4'; }, () => {});
+  wire('segAbl', (v) => { vAbl = v; }, drawAbl);
+  drawVs(); drawModes(); drawAbl(); drawSingle(); drawCap();
 }
 const MET = {
   tpot: { f: (r) => r.tpot_p50_ms, t: 'ms per output token, median', fm: (v) => fmt(v, v < 10 ? 1 : 0) + ' ms', better: 'lower' },
   ttft: { f: (r) => r.ttft_p50_s, t: 'seconds to first token, median', fm: (v) => (v < 1 ? fmt(v * 1000, 0) + ' ms' : fmt(v, 1) + ' s'), better: 'lower' },
   good: { f: (r) => r.goodput_tok_s, t: 'tokens per second delivered', fm: (v) => fmt(v, 0) + ' tok/s', better: 'higher' },
 };
+function httpSeries() {
+  const base = [
+    { name: 'vLLM', color: 'var(--c-c)', rows: D.vllm_load.filter((x) => x.system === 'vLLM' && x.size === vSize) },
+    { name: 'Stage 14 (in-place)', color: 'var(--c-b)', rows: D.s14_http.filter((x) => x.size === vSize) },
+    { name: 'Stage 13 (folded GQA)', color: 'var(--c-d)', dash: '5 3', rows: D.s13_http.filter((x) => x.size === vSize) },
+    { name: 'Stage 12 (gather)', color: 'var(--c-a)', dash: '3 3', rows: D.vllm_load.filter((x) => x.system === 'engine graph (HTTP)' && x.size === vSize) },
+  ];
+  if (vHf === 'all') {
+    base.push(
+      { name: 'HF batch 8', color: 'var(--bad)', rows: D.vllm_load.filter((x) => x.system === 'HF static batch 8' && x.size === vSize) },
+      { name: 'HF one by one', color: 'var(--muted)', rows: D.vllm_load.filter((x) => x.system === 'HF sequential' && x.size === vSize) },
+    );
+  }
+  return base;
+}
 function drawVs() {
   const M = MET[vMetric], rates = [1, 2, 4, 8];
-  const series = SYS.map((s) => ({ name: s.n, color: s.c, pts: rates.map((r) => { const row = D.vllm_load.find((x) => x.system === s.k && x.size === vSize && x.rate === r); return row ? [r, M.f(row)] : null; }).filter(Boolean) })).filter((s) => s.pts.length);
-  const log = vLog;
-  lineChart($('vChart'), series, { xlog: false, ylog: log, xticks: rates, xr: [1, 8.4], xTitle: 'arrival rate (requests per second)', yTitle: M.t, yfmt: (v) => (vMetric === 'ttft' ? (v < 1 ? fmt(v * 1000, 0) + ' ms' : fmt(v, v < 10 ? 1 : 0) + ' s') : fmt(v, v < 10 ? 1 : 0)), xfmt: (v) => v });
+  const raw = httpSeries();
+  const series = raw.map((s) => ({
+    name: s.name, color: s.color, dash: s.dash,
+    pts: rates.map((r) => { const row = s.rows.find((x) => x.rate === r); return row ? [r, M.f(row)] : null; }).filter(Boolean),
+  })).filter((s) => s.pts.length);
+  lineChart($('vChart'), series, { xlog: false, ylog: vLog, xticks: rates, xr: [1, 8.6], xTitle: 'arrival rate (requests per second)', yTitle: M.t, yfmt: (v) => (vMetric === 'ttft' ? (v < 1 ? fmt(v * 1000, 0) + ' ms' : fmt(v, v < 10 ? 1 : 0) + ' s') : fmt(v, v < 10 ? 1 : 0)), xfmt: (v) => v });
   $('vLegend').innerHTML = series.map((s) => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('') + `<span class="small">${M.better} is better</span>`;
   let t = '<tr><th>requests/s</th>' + series.map((s) => `<th>${s.name}</th>`).join('') + '</tr>';
-  rates.forEach((r) => { t += `<tr><td>${r}</td>` + SYS.filter((s) => series.find((x) => x.name === s.n)).map((s) => { const row = D.vllm_load.find((x) => x.system === s.k && x.size === vSize && x.rate === r); return `<td>${row ? M.fm(M.f(row)) : 'n/a'}</td>`; }).join('') + '</tr>'; });
+  rates.forEach((r) => {
+    t += `<tr><td>${r}</td>` + raw.filter((s) => series.find((x) => x.name === s.name)).map((s) => {
+      const row = s.rows.find((x) => x.rate === r);
+      return `<td>${row ? M.fm(M.f(row)) : 'n/a'}</td>`;
+    }).join('') + '</tr>';
+  });
   $('vTable').innerHTML = t;
-  const e8 = D.vllm_load.find((x) => x.system === 'engine graph (HTTP)' && x.size === vSize && x.rate === 8), v8 = D.vllm_load.find((x) => x.system === 'vLLM' && x.size === vSize && x.rate === 8);
-  const e1 = D.vllm_load.find((x) => x.system === 'engine graph (HTTP)' && x.size === vSize && x.rate === 1), v1 = D.vllm_load.find((x) => x.system === 'vLLM' && x.size === vSize && x.rate === 1);
-  $('vNote').innerHTML = `At <b>1 req/s</b> my engine is within <b>${fmt(e1.tpot_p50_ms / v1.tpot_p50_ms, 1)}x</b> of vLLM on time per token (${fmt(e1.tpot_p50_ms, 0)} ms vs ${fmt(v1.tpot_p50_ms, 0)} ms). At <b>8 req/s</b> it falls to ${fmt(e8.tpot_p50_ms, 0)} ms vs ${fmt(v8.tpot_p50_ms, 0)} ms (<b>${fmt(e8.tpot_p50_ms / v8.tpot_p50_ms, 1)}x</b> slower) and delivers ${fmt(e8.goodput_tok_s, 0)} vs ${fmt(v8.goodput_tok_s, 0)} tok/s. Switch the metric to first-token wait to see the Hugging Face baselines, which queue whole batches or whole requests.`;
+  const s12_8 = D.vllm_load.find((x) => x.system === 'engine graph (HTTP)' && x.size === vSize && x.rate === 8);
+  const s13_8 = D.s13_http.find((x) => x.size === vSize && x.rate === 8);
+  const s14_8 = D.s14_http.find((x) => x.size === vSize && x.rate === 8);
+  const v8 = D.vllm_load.find((x) => x.system === 'vLLM' && x.size === vSize && x.rate === 8);
+  $('vNote').innerHTML = `At <b>8 req/s (${vSize})</b>, HTTP median TPOT drops from <b>${fmt(s12_8.tpot_p50_ms, 1)} ms</b> (Stage 12 gather) &rarr; <b>${fmt(s13_8.tpot_p50_ms, 1)} ms</b> (Stage 13 folded GQA + fine buckets) &rarr; <b>${fmt(s14_8.tpot_p50_ms, 1)} ms</b> (Stage 14 in-place Triton paged kernel, <b>${fmt(s14_8.goodput_tok_s, 0)} tok/s</b>, <b>${fmt(s14_8.slo_attainment * 100, 0)}% SLO</b>) against vLLM's <b>${fmt(v8.tpot_p50_ms, 1)} ms</b> (separate session) — shrinking the gap from <b>${fmt(s12_8.tpot_p50_ms / v8.tpot_p50_ms, 1)}x</b> to <b>${fmt(s14_8.tpot_p50_ms / v8.tpot_p50_ms, 1)}x</b>.`;
+}
+function drawModes() {
+  if (!D.s12_modes) return;
+  const cols = { eager: 'var(--c-c)', static: 'var(--c-a)', graph: 'var(--c-b)' };
+  const groups = ['0.5B', '1.5B'].map((sz) => ({
+    label: `Qwen2.5 ${sz} (4 req/s)`,
+    bars: ['eager', 'static', 'graph'].map((m) => {
+      const r = D.s12_modes.find((x) => x.size === sz && x.mode === m);
+      return { name: m, v: r ? r.tpot_p50_ms : 0, color: cols[m] };
+    }),
+  }));
+  barChart($('vModes'), groups, { w: 500, h: 225, fmtV: (v) => fmt(v, 1), yTitle: 'median TPOT (ms)' });
+}
+function drawAbl() {
+  const rows = (vAbl === 's13' ? D.s13_ablation : D.s14_ablation).filter((r) => r.size === vSize);
+  const groups = rows.map((r) => ({
+    label: r.variant,
+    bars: [{ name: r.system, v: r.tpot_p50_ms, color: r.variant === 'V6' || r.variant === 'K4' || r.variant === 'K1' ? 'var(--c-b)' : (r.variant === 'V1' || r.variant === 'B0' ? 'var(--c-a)' : 'var(--c-c)') }],
+  }));
+  barChart($('vAbl'), groups, { w: 500, h: 220, fmtV: (v) => fmt(v, 0), yTitle: 'median TPOT at 8 req/s (ms)' });
+  if (vAbl === 's13') {
+    const v1 = rows.find((r) => r.variant === 'V1'), v3 = rows.find((r) => r.variant === 'V3'), v6 = rows.find((r) => r.variant === 'V6');
+    $('ablNote').innerHTML = v1 && v3 && v6
+      ? `<b>Stage 13 (${vSize}):</b> V1 expand+graph (<b>${fmt(v1.tpot_p50_ms, 0)} ms</b>) &rarr; V3 fold GQA (<b>${fmt(v3.tpot_p50_ms, 0)} ms</b>, moving 29% of attention bytes) &rarr; V6 all three levers (<b>${fmt(v6.tpot_p50_ms, 0)} ms</b>). Folding delivered the lion's share of the win.`
+      : '';
+  } else {
+    const b0 = rows.find((r) => r.variant === 'B0'), k0 = rows.find((r) => r.variant === 'K0'), best = rows.reduce((a, r) => (r.tpot_p50_ms < a.tpot_p50_ms ? r : a), rows[0]);
+    $('ablNote').innerHTML = b0 && k0 && best
+      ? `<b>Stage 14 (${vSize}):</b> B0 Stage 12 baseline (<b>${fmt(b0.tpot_p50_ms, 0)} ms</b>) &rarr; K0 Stage 13 gather (<b>${fmt(k0.tpot_p50_ms, 0)} ms</b>) &rarr; <b>${best.variant}</b> in-place kernel (<b>${fmt(best.tpot_p50_ms, 0)} ms</b>). Once the in-place kernel made large batches cheap, Stage 13's eager fallback went from a help to a cost.`
+      : '';
+  }
 }
 function drawSingle() {
   const sys = ['vLLM', 'engine graph (HTTP)', 'HF sequential'], names = { 'vLLM': 'vLLM', 'engine graph (HTTP)': 'mini-vllm', 'HF sequential': 'HF' };
@@ -697,13 +840,20 @@ function drawSingle() {
 }
 function drawCap() {
   $('capSub').textContent = `Targets: first token within ${D.slo.ttft_s} s and under ${D.slo.tpot_s * 1000} ms per token.`;
-  const names = { 'vLLM': 'vLLM', 'engine graph (HTTP)': 'mini-vllm', 'HF sequential': 'HF one by one', 'HF static batch 8': 'HF batch 8' };
-  let t = '<tr><th>system</th><th>0.5B</th><th>1.5B</th></tr>';
-  Object.keys(names).forEach((s) => {
-    const cell = (sz) => { const r = D.capacity.find((x) => x.system === s && x.size === sz); return r && r.capacity_req_s != null ? (r.capacity_req_s >= 8 ? '8+ req/s' : fmt(r.capacity_req_s, 0) + ' req/s') : 'under 1 req/s'; };
-    t += `<tr><td>${names[s]}</td><td>${cell('0.5B')}</td><td>${cell('1.5B')}</td></tr>`;
-  });
-  $('capTable').innerHTML = t;
+  const capOf = (rows) => {
+    const ok = rows.filter((r) => r.slo_attainment >= 0.9).map((r) => r.rate);
+    return ok.length ? (Math.max(...ok) >= 8 ? '8+ req/s' : fmt(Math.max(...ok), 0) + ' req/s') : 'under 1 req/s';
+  };
+  const cellVC = (sys, sz) => { const r = D.capacity.find((x) => x.system === sys && x.size === sz); return r && r.capacity_req_s != null ? (r.capacity_req_s >= 8 ? '8+ req/s' : fmt(r.capacity_req_s, 0) + ' req/s') : 'under 1 req/s'; };
+  const rows = [
+    ['vLLM', cellVC('vLLM', '0.5B'), cellVC('vLLM', '1.5B')],
+    ['mini-vllm Stage 14 (in-place)', capOf(D.s14_http.filter((r) => r.size === '0.5B')), capOf(D.s14_http.filter((r) => r.size === '1.5B'))],
+    ['mini-vllm Stage 13 (folded GQA)', capOf(D.s13_http.filter((r) => r.size === '0.5B')), capOf(D.s13_http.filter((r) => r.size === '1.5B'))],
+    ['mini-vllm Stage 12 (gather)', cellVC('engine graph (HTTP)', '0.5B'), cellVC('engine graph (HTTP)', '1.5B')],
+    ['HF batch 8', cellVC('HF static batch 8', '0.5B'), cellVC('HF static batch 8', '1.5B')],
+    ['HF one by one', cellVC('HF sequential', '0.5B'), cellVC('HF sequential', '1.5B')],
+  ];
+  $('capTable').innerHTML = '<tr><th>system</th><th>0.5B</th><th>1.5B</th></tr>' + rows.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('');
 }
 
 /* ---------- boot ---------- */

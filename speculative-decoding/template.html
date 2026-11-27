@@ -1,0 +1,1303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speculative Decoding &amp; Int8 Composition</title>
+<meta name="description" content="Interactive speculative decoding trace simulator, exact geometric speedup law, and measured Tesla T4 evidence explaining why weight-only int8 and speculation do not multiply.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Speculative Decoding &amp; Int8 Composition — ml-viz">
+<meta property="og:description" content="Step through draft-verify-rollback, explore the exact geometric speedup law, and inspect measured Tesla T4 stages 6-11 showing why int8 and speculation only keep 48-65% of their product.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/speculative-decoding/">
+<meta name="twitter:card" content="summary">
+<!--__THEME__-->
+<style>
+  .row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .formula { font: .86rem var(--mono); background: var(--surface-2); padding: 9px 12px; border-radius: 9px; overflow-x: auto; white-space: nowrap; }
+  .prompt-box { font: .84rem/1.45 var(--mono); background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px; color: var(--muted); white-space: pre-wrap; margin-bottom: 12px; }
+  .prompt-box b { color: var(--ink); }
+
+  /* Token pills & round inspector */
+  .stage-box { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 12px; }
+  .stage-grid { display: grid; gap: 8px; }
+  .stage-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .stage-lbl { font: 600 12px var(--mono); color: var(--muted); min-width: 112px; text-transform: uppercase; letter-spacing: .03em; }
+  .tok-strip { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .tok { display: inline-flex; align-items: center; gap: 4px; font: 600 12.5px/1.2 var(--mono); padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .tok.acc { background: color-mix(in srgb, var(--c-b) 15%, var(--surface)); border-color: var(--c-b); color: var(--ink); }
+  .tok.bon { background: color-mix(in srgb, var(--c-c) 16%, var(--surface)); border-color: var(--c-c); color: var(--ink); }
+  .tok.rej { background: color-mix(in srgb, var(--bad) 13%, var(--surface)); border-color: var(--bad); color: var(--bad); text-decoration: line-through; opacity: .88; }
+  .tok.ref { background: var(--surface); border-color: var(--line); color: var(--muted); }
+  .tok .tag { font: 700 10px var(--sans); opacity: .75; }
+  .round-sep { display: inline-block; width: 2px; height: 18px; background: var(--line); margin: 0 2px; border-radius: 2px; }
+
+  /* KV cache rollback indicator */
+  .kv-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--muted); }
+  .kv-track { flex: 1; min-width: 160px; height: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; overflow: hidden; display: flex; }
+  .kv-seg-base { background: var(--muted); opacity: .45; }
+  .kv-seg-keep { background: var(--c-b); }
+  .kv-seg-bon { background: var(--c-c); }
+  .kv-seg-drop { background: repeating-linear-gradient(45deg, var(--bad) 0 3px, transparent 3px 6px); opacity: .75; }
+
+  /* Tape comparison */
+  .tape-block { margin-top: 10px; }
+  .tape-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; font-size: .84rem; color: var(--muted); }
+  .parity-ok { font: 600 12px var(--mono); color: var(--c-b); }
+
+  /* Preset pills */
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+  .preset { font: 600 12.5px var(--sans); background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 99px; padding: 5px 11px; cursor: pointer; }
+  .preset:hover { border-color: var(--accent); }
+  .preset[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  .kpi.bad .v { color: var(--bad); }
+  .kpi.d .v { color: var(--c-d); }
+  .tbl-wrap { overflow-x: auto; margin-top: 10px; }
+  .num-good { color: var(--c-b); font-weight: 700; }
+  .num-bad { color: var(--bad); font-weight: 700; }
+  .num-accent { color: var(--c-c); font-weight: 700; }
+  .chart-scroll { overflow-x: auto; }
+  @media (max-width: 640px) {
+    .stage-lbl { min-width: 100%; }
+  }
+</style>
+<!--__UI__-->
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <a href="../">&larr; ml-viz</a>
+    <span class="sp"></span>
+    <a href="https://github.com/chizkidd/mini-vllm" target="_blank" rel="noopener">mini-vllm repo</a>
+    <button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
+  </div>
+
+  <h1>Speculative Decoding &amp; Int8 Composition</h1>
+  <p class="lede">Speculative decoding guesses <em>k</em> tokens ahead and verifies them in one target pass; weight-only int8 halves the weight bytes read per step. Alone, both accelerate batch-1 decode on a Tesla T4. Together, they refuse to multiply. Every figure tagged <span class="badge measured">measured</span> comes from <a href="https://github.com/chizkidd/mini-vllm" target="_blank" rel="noopener">mini-vllm</a> Stages 6–11 on a Tesla T4; interactive curves and traces are tagged <span class="badge simulated">simulated</span>.</p>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" aria-selected="true" data-p="p1">1. Draft, verify &amp; rollback</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p2">2. The speedup law</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p3">3. Why int8 &amp; speculation don't multiply</button>
+  </div>
+
+  <!-- ============ TAB 1: TRACE ============ -->
+  <section class="panel" id="p1">
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>Token-by-token draft, verify &amp; rollback <span class="badge simulated">simulated</span></h2>
+          <div class="small">Calibrated to measured Stage 9 Qwen2.5-3B acceptance rates on Tesla T4. One target forward pass checks all <em>k</em> guesses in parallel, keeps the matching prefix plus one bonus/correction token, and rolls back the KV length pointer with zero recompute.</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="ctl" style="min-width:auto">
+          <label>Proposer</label>
+          <div class="seg" id="tProp">
+            <button data-v="ngram" aria-pressed="true" type="button">N-gram lookup</button>
+            <button data-v="draft_0p5b" aria-pressed="false" type="button">0.5B draft</button>
+            <button data-v="int8_self" aria-pressed="false" type="button">Int8 self-draft</button>
+          </div>
+        </div>
+        <div class="ctl" style="min-width:auto">
+          <label>Workload</label>
+          <div class="seg" id="tWork">
+            <button data-v="copy" aria-pressed="false" type="button">Copy</button>
+            <button data-v="code" aria-pressed="true" type="button">Code</button>
+            <button data-v="open" aria-pressed="false" type="button">Open</button>
+          </div>
+        </div>
+        <div class="ctl" style="min-width:160px">
+          <label for="tK">Lookahead k <span class="val" id="vTK">4</span></label>
+          <input type="range" id="tK" min="1" max="8" step="1" value="4">
+        </div>
+        <div class="ctl" style="min-width:auto">
+          <label>Playback</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn primary" id="tStep" type="button">Step</button>
+            <button class="btn" id="tPlay" type="button">Play</button>
+            <button class="btn" id="tReset" type="button">Reset</button>
+            <button class="btn" id="tSeed" type="button">New seed</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="prompt-box" id="tPrompt"></div>
+      <div class="grid kpis" id="tKpis"></div>
+
+      <div class="stage-box" id="tInspector"></div>
+
+      <div class="tape-block">
+        <div class="tape-head">
+          <span><b>Speculative output stream</b> (green = accepted draft, blue = target bonus/correction)</span>
+          <span class="parity-ok" id="tParity"></span>
+        </div>
+        <div class="tok-strip" id="tSpecTape"></div>
+      </div>
+
+      <div class="tape-block">
+        <div class="tape-head">
+          <span><b>Plain greedy reference</b> (1 target pass per token — identical tokens, more steps)</span>
+          <span class="small mono" id="tRefMeta"></span>
+        </div>
+        <div class="tok-strip" id="tRefTape"></div>
+      </div>
+
+      <div class="callout" id="tCallout" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>Round-by-round breakdown <span class="badge simulated">simulated</span></h2>
+          <div class="small">Each bar is one verification round. Notice how a single rejected token discards the entire drafted suffix after it, because later drafts were conditioned on the wrong token.</div>
+        </div>
+      </div>
+      <svg class="chart" id="tRoundsChart" role="img" aria-label="Round by round accepted, bonus, and rolled back tokens"></svg>
+      <div class="legend">
+        <span><i style="background:var(--c-b)"></i>accepted draft tokens</span>
+        <span><i style="background:var(--c-c)"></i>target bonus / correction token (+1 guaranteed)</span>
+        <span><i style="background:var(--bad);opacity:.55"></i>rolled-back suffix (KV pointer rewound)</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>Why checking <em>k + 1</em> tokens in one pass is nearly free <span class="badge measured">measured</span></h2>
+          <div class="small">Stages 6 &amp; 7 on Tesla T4 (fp16). At batch 1, decode is memory-bandwidth and launch bound, so verifying 5–9 tokens costs only ~1.07–1.16× a single-token step. Once batch hits 64, compute binds and verify cost climbs past 2×.</div>
+        </div>
+        <div class="seg" id="vCostModel">
+          <button data-v="0.5B" aria-pressed="true" type="button">Qwen2.5-0.5B (Stage 6)</button>
+          <button data-v="3B" aria-pressed="false" type="button">Qwen2.5-3B (Stage 7)</button>
+        </div>
+      </div>
+      <svg class="chart" id="mVerifyCost" role="img" aria-label="Measured fp16 verify pass cost across batch sizes"></svg>
+      <div class="legend" id="mVerifyLegend"></div>
+      <div class="callout" id="mVerifyNote" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ============ TAB 2: SPEEDUP LAW ============ -->
+  <section class="panel" id="p2" hidden>
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>The exact geometric speedup law <span class="badge simulated">exact formula</span></h2>
+          <div class="small">If each drafted token matches the target independently with probability &alpha;, the expected tokens emitted per verify pass is a geometric sum. Dividing by the round cost (<em>k</em> draft steps of relative cost <em>c</em>, plus one verify pass of relative cost <em>v</em>) gives the exact speedup.</div>
+        </div>
+      </div>
+
+      <div class="formula">Speedup(&alpha;, k, c, v) = E[tokens] / (k &middot; c + v), &nbsp;&nbsp; E[tokens] = (1 &minus; &alpha;<sup>k+1</sup>) / (1 &minus; &alpha;) &nbsp; [or k + 1 when &alpha; = 1]</div>
+
+      <div class="presets" id="lawPresets" aria-label="Measured Tesla T4 presets">
+        <button class="preset" data-id="ngram_fp16" aria-pressed="true" type="button">Free n-gram (c=0, v=1.01)</button>
+        <button class="preset" data-id="draft_eager" aria-pressed="false" type="button">Stage 7 eager 0.5B draft (c=0.84)</button>
+        <button class="preset" data-id="draft_graph" aria-pressed="false" type="button">Stage 7 CUDA-graph 0.5B (c=0.27)</button>
+        <button class="preset" data-id="int8_self" aria-pressed="false" type="button">Stage 9 int8 self-draft (c=0.56)</button>
+        <button class="preset" data-id="int8_verify" aria-pressed="false" type="button">Stage 11 int8 target (v=1.94)</button>
+      </div>
+
+      <div class="controls">
+        <div class="ctl">
+          <label for="sAlpha">Acceptance rate &alpha; <span class="val" id="vAlpha"></span></label>
+          <input type="range" id="sAlpha" min="0" max="1" step="0.01" value="0.91">
+        </div>
+        <div class="ctl">
+          <label for="sK">Lookahead k <span class="val" id="vK"></span></label>
+          <input type="range" id="sK" min="1" max="12" step="1" value="6">
+        </div>
+        <div class="ctl">
+          <label for="sC">Draft cost ratio c <span class="val" id="vC"></span></label>
+          <input type="range" id="sC" min="0" max="1" step="0.01" value="0.00">
+        </div>
+        <div class="ctl">
+          <label for="sV">Verify pass cost v <span class="val" id="vV"></span></label>
+          <input type="range" id="sV" min="1" max="2.6" step="0.02" value="1.02">
+        </div>
+      </div>
+
+      <div class="grid kpis" id="lawKpis"></div>
+      <div class="callout" id="lawNote" style="margin-top:12px"></div>
+    </div>
+
+    <div class="grid two" style="margin-top:14px">
+      <div class="card">
+        <h2>Speedup vs lookahead <em>k</em> <span class="badge simulated">exact formula</span></h2>
+        <div class="small" style="margin-bottom:6px">When <em>c &gt; 0</em>, larger <em>k</em> eventually loses because extra draft steps cost linearly while expected tokens saturate at 1/(1&minus;&alpha;).</div>
+        <svg class="chart" id="lawVsK" role="img" aria-label="Speedup curve versus lookahead k"></svg>
+        <div class="legend">
+          <span><i style="background:var(--c-c)"></i>current (c, v)</span>
+          <span><i style="background:var(--muted);opacity:.55"></i>ideal free draft (c=0, v=1)</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Speedup vs acceptance &alpha; <span class="badge simulated">exact formula</span></h2>
+        <div class="small" style="margin-bottom:6px">Below the break-even acceptance &alpha;<sub>min</sub>, speculative decoding is strictly slower than plain greedy decoding.</div>
+        <svg class="chart" id="lawVsAlpha" role="img" aria-label="Speedup curve versus acceptance rate alpha"></svg>
+        <div class="legend">
+          <span><i style="background:var(--c-b)"></i>speedup at current (k, c, v)</span>
+          <span><i style="background:var(--c-a)"></i>1.0× break-even line</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="row-head">
+        <div>
+          <h2>Why eager 0.5B drafting lost: launches dominate weights <span class="badge measured">measured</span></h2>
+          <div class="small">Stage 7 on Tesla T4. Qwen2.5-0.5B has 0.32× the weights of 1.5B and 0.16× the weights of 3B — yet run eagerly its step takes 21.3 ms vs 25.5 ms (<em>c</em> = 0.84) and 34.7 ms (<em>c</em> = 0.62) because Python &amp; kernel launches dominate. Capturing the draft as a CUDA graph cuts <em>c</em> in half.</div>
+        </div>
+      </div>
+      <svg class="chart" id="mCostRatio" role="img" aria-label="Measured draft cost ratio c eager vs CUDA graph"></svg>
+      <div class="legend">
+        <span><i style="background:var(--muted);opacity:.6"></i>weight ratio (ideal)</span>
+        <span><i style="background:var(--c-a)"></i>eager draft c (launch-bound)</span>
+        <span><i style="background:var(--c-b)"></i>CUDA-graphed draft c</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="row-head">
+        <div>
+          <h2>Measured T4 scoreboard: Stages 6, 7 &amp; 9 <span class="badge measured">measured</span></h2>
+          <div class="small" id="mScoreSub">Compare free n-gram lookup, 0.5B neural draft (eager vs CUDA graph), and int8 self-draft across workloads.</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div class="seg" id="mScoreStage">
+            <button data-v="s7" aria-pressed="true" type="button">Stage 7 (n-gram vs 0.5B)</button>
+            <button data-v="s9" aria-pressed="false" type="button">Stage 9 (+ int8 self-draft)</button>
+          </div>
+          <div class="seg" id="mScoreTarget">
+            <button data-v="1.5B" aria-pressed="false" type="button">1.5B target</button>
+            <button data-v="3B" aria-pressed="true" type="button">3B target</button>
+          </div>
+        </div>
+      </div>
+      <svg class="chart" id="mScoreChart" role="img" aria-label="Measured speculative speedup by workload and proposer"></svg>
+      <div class="legend" id="mScoreLegend"></div>
+      <div class="tbl-wrap"><table class="t" id="mScoreTable"></table></div>
+      <div class="callout" id="mScoreNote" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ============ TAB 3: INT8 & NON-COMPOSITION ============ -->
+  <section class="panel" id="p3" hidden>
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>1. Weight-only int8: PyTorch slows down, fused Triton wins <span class="badge measured">measured</span></h2>
+          <div class="small">Stages 8 &amp; 9 on Tesla T4 (batch 1). PyTorch's eager/compiled dequantize materializes fp16 weights back in HBM, running 2–3× <b>slower</b> than fp16. Only a fused Triton GEMV kernel that reads int8 bytes directly turns half the bytes into real decode speedup (up to 1.8–2.0× with CUDA graphs).</div>
+        </div>
+        <div class="seg" id="mInt8Metric">
+          <button data-v="ms" aria-pressed="true" type="button">Step time (ms, lower = faster)</button>
+          <button data-v="x" aria-pressed="false" type="button">Speedup vs fp16 eager</button>
+        </div>
+      </div>
+      <svg class="chart" id="mInt8Chart" role="img" aria-label="Measured decode speed across fp16, PyTorch int8, and fused Triton int8"></svg>
+      <div class="legend">
+        <span><i style="background:var(--muted);opacity:.7"></i>fp16 eager (Stage 8)</span>
+        <span><i style="background:var(--bad)"></i>PyTorch int8 eager (slower!)</span>
+        <span><i style="background:var(--c-a)"></i>PyTorch int8 compiled (still slower)</span>
+        <span><i style="background:var(--c-b)"></i>Fused Triton int8 + graph (Stage 10)</span>
+      </div>
+      <div class="grid two" style="margin-top:12px">
+        <div>
+          <h3 style="margin-bottom:4px">Weight memory saved (Stage 8)</h3>
+          <div class="tbl-wrap" style="margin-top:0"><table class="t" id="mMemTable"></table></div>
+        </div>
+        <div>
+          <h3 style="margin-bottom:4px">Perplexity &amp; failing controls (Stage 8)</h3>
+          <div class="tbl-wrap" style="margin-top:0"><table class="t" id="mPplTable"></table></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>2. The hidden bottleneck: multi-row verify cost <em>v</em> <span class="badge measured">measured</span></h2>
+          <div class="small">Stages 10 &amp; 11 CUDA-graphed block passes on Tesla T4. In fp16, verifying 5–7 tokens stays flat at <b>1.01–1.04×</b> a 1-token step. In fused int8, extra rows hit per-weight dequant &amp; FMA ceilings on a power-capped T4: Stage 10's kernel spiked to <b>2.27–2.55×</b>, and even Stage 11's rewritten multi-row kernel still costs <b>1.83–2.21×</b>.</div>
+        </div>
+        <div class="seg" id="mBlockTarget">
+          <button data-v="1.5B" aria-pressed="false" type="button">Qwen2.5-1.5B</button>
+          <button data-v="3B" aria-pressed="true" type="button">Qwen2.5-3B</button>
+        </div>
+      </div>
+      <svg class="chart" id="mBlockChart" role="img" aria-label="Measured multi-row verify cost v for fp16 vs int8 kernels"></svg>
+      <div class="legend">
+        <span><i style="background:var(--c-b)"></i>fp16 graph (flat ~1.01–1.04×)</span>
+        <span><i style="background:var(--bad)"></i>int8 Stage 10 kernel (2.27–2.55×)</span>
+        <span><i style="background:var(--c-a)"></i>int8 Stage 11 rewrite (1.83–2.21×)</span>
+      </div>
+      <div class="callout" id="mBlockNote" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>3. Non-composition: why int8 &times; speculation only keeps 48–65% <span class="badge measured">measured</span></h2>
+          <div class="small">Stage 11 on Tesla T4 (all speedups relative to fp16 graph plain = 1.0×). Because <em>v</em><sub>int8</sub> &asymp; 1.6–2.1× instead of 1.0×, combining int8 weights with n-gram speculation delivers roughly half to two-thirds of the naive product <em>S</em><sub>int8</sub> &times; <em>S</em><sub>ngram</sub> — and on high-acceptance copy it actually loses to fp16 speculation!</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div class="seg" id="mMultTarget">
+            <button data-v="1.5B" aria-pressed="false" type="button">1.5B</button>
+            <button data-v="3B" aria-pressed="true" type="button">3B</button>
+          </div>
+          <div class="seg" id="mMultK">
+            <button data-v="4" aria-pressed="true" type="button">k = 4</button>
+            <button data-v="6" aria-pressed="false" type="button">k = 6</button>
+          </div>
+        </div>
+      </div>
+      <svg class="chart" id="mMultChart" role="img" aria-label="Measured int8 alone, ngram alone, naive product, and measured both"></svg>
+      <div class="legend">
+        <span><i style="background:var(--c-c)"></i>int8 alone (graph)</span>
+        <span><i style="background:var(--c-b)"></i>n-gram alone (fp16 graph)</span>
+        <span><i class="hatch"></i>naive product (int8 &times; n-gram)</span>
+        <span><i style="background:var(--c-a)"></i>measured both (int8 + n-gram)</span>
+      </div>
+      <div class="tbl-wrap"><table class="t" id="mMultTable"></table></div>
+      <div class="callout" id="mMultNote" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="row-head">
+        <div>
+          <h2>4. Best end-to-end single-stream stack on Tesla T4 <span class="badge measured">measured</span></h2>
+          <div class="small">Stage 11 end-to-end throughput vs fp16 eager baseline. The winning regime splits cleanly by workload: <b>fp16 graph + n-gram</b> dominates repetitive copy (<b>6.3×</b> on 3B), ties int8+n-gram on code (<b>2.0×</b>), while <b>plain int8 graph</b> wins open prose (<b>1.9×</b>) where turning speculation on hurts.</div>
+        </div>
+        <div class="seg" id="mBestTarget">
+          <button data-v="3B" aria-pressed="true" type="button">Qwen2.5-3B</button>
+          <button data-v="1.5B" aria-pressed="false" type="button">Qwen2.5-1.5B</button>
+        </div>
+      </div>
+      <div class="grid kpis" id="mBestKpis" style="margin-bottom:12px"></div>
+      <svg class="chart" id="mBestChart" role="img" aria-label="Best end-to-end stack throughput comparison by workload"></svg>
+      <div class="legend">
+        <span><i style="background:var(--muted);opacity:.6"></i>fp16 eager plain</span>
+        <span><i style="background:var(--c-c)"></i>int8 graph plain</span>
+        <span><i style="background:var(--c-b)"></i>fp16 graph + n-gram (best k)</span>
+        <span><i style="background:var(--c-a)"></i>int8 graph + n-gram (best k)</span>
+      </div>
+      <div class="tbl-wrap"><table class="t" id="mBestTable"></table></div>
+    </div>
+  </section>
+
+  <footer class="site">Built from <a href="https://github.com/chizkidd/mini-vllm" target="_blank" rel="noopener">chizkidd/mini-vllm</a> Stages 6–11 result files (Tesla T4, Qwen2.5 0.5B / 1.5B / 3B). Data extraction, simulator, and unit tests live alongside this page in <code>speculative-decoding/</code>.</footer>
+</div>
+
+<script>
+const D = /*__DATA__*/;
+/*__SIM__*/
+(function () {
+'use strict';
+
+const S = window.SPECSIM;
+const $ = (id) => document.getElementById(id);
+const fmt = (x, d = 1) => (x == null || Number.isNaN(x) ? 'n/a' : Number(x).toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d }));
+const fmt0 = (x) => (x == null ? 'n/a' : Number(x).toLocaleString('en-US', { maximumFractionDigits: 0 }));
+const esc = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const kpi = (cls, v, l) => `<div class="kpi ${cls || ''}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+
+if (window.mlViz) window.mlViz.initTheme('themeBtn');
+
+function bindSeg(id, onChange) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-v]');
+    if (!btn) return;
+    Array.prototype.forEach.call(el.querySelectorAll('button[data-v]'), (b) => {
+      b.setAttribute('aria-pressed', String(b === btn));
+    });
+    onChange(btn.dataset.v);
+  });
+}
+
+/* ---------- Reusable SVG chart helpers ---------- */
+function niceTicks(lo, hi, n = 5) {
+  if (hi <= lo) return [lo];
+  const span = hi - lo, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= n + 1) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+function linScale(lo, hi, a, b) {
+  return (v) => a + ((v - lo) / (hi - lo || 1)) * (b - a);
+}
+
+function svgHatchDef(id) {
+  return `<defs><pattern id="${id}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--hatch)" stroke-width="2.2"/></pattern></defs>`;
+}
+
+function groupedBarChart(svg, groups, { w = 680, h = 250, fmtV = (v) => fmt(v, 2) + '×', yTitle = '', max = null, refLine = null, hatchId = null } = {}) {
+  const m = { l: 48, r: 16, t: 22, b: 38 };
+  const vals = groups.flatMap((g) => g.bars.map((b) => b.v || 0));
+  if (refLine != null) vals.push(refLine.y);
+  const top = max || Math.max(1, ...vals) * 1.15;
+  const y = linScale(0, top, h - m.b, m.t);
+  const ticks = niceTicks(0, top, 4);
+  const gw = (w - m.l - m.r) / groups.length;
+  const nb = groups[0].bars.length;
+  const bw = Math.min(36, Math.max(12, (gw - 20) / nb));
+
+  let body = hatchId ? svgHatchDef(hatchId) : '';
+  ticks.forEach((t) => {
+    body += `<line class="grid-l" x1="${m.l}" x2="${w - m.r}" y1="${y(t)}" y2="${y(t)}"/>`;
+    body += `<text x="${m.l - 6}" y="${y(t) + 4}" text-anchor="end">${t < 10 ? fmt(t, 1) : fmt0(t)}</text>`;
+  });
+  body += `<line class="axis" x1="${m.l}" x2="${w - m.r}" y1="${y(0)}" y2="${y(0)}"/>`;
+  if (refLine != null) {
+    body += `<line x1="${m.l}" x2="${w - m.r}" y1="${y(refLine.y)}" y2="${y(refLine.y)}" stroke="${refLine.color || 'var(--c-a)'}" stroke-dasharray="5 4" stroke-width="1.5"/>`;
+    if (refLine.label) {
+      body += `<text x="${w - m.r}" y="${y(refLine.y) - 5}" text-anchor="end" style="fill:${refLine.color || 'var(--c-a)'};font-weight:600">${esc(refLine.label)}</text>`;
+    }
+  }
+  groups.forEach((g, i) => {
+    const cx = m.l + gw * (i + 0.5);
+    const x0 = cx - (bw * nb) / 2;
+    g.bars.forEach((b, j) => {
+      const bx = x0 + j * bw;
+      const val = b.v || 0;
+      const bh = Math.max(0, y(0) - y(val));
+      const fill = b.hatch && hatchId ? `url(#${hatchId})` : b.color;
+      const stroke = b.hatch ? ' stroke="var(--hatch)" stroke-width="1.2"' : '';
+      const tip = b.tip || `${g.label} — ${b.name}: ${fmtV(val)}`;
+      body += `<rect x="${bx + 1.5}" y="${y(val)}" width="${Math.max(4, bw - 3)}" height="${bh}" rx="3" fill="${fill}"${stroke} tabindex="0"><title>${esc(tip)}</title></rect>`;
+      if (b.v != null) {
+        body += `<text x="${bx + bw / 2}" y="${Math.max(m.t - 4, y(val) - 4)}" text-anchor="middle" class="lbl-strong" style="font-size:10px">${esc(fmtV(val))}</text>`;
+      }
+    });
+    body += `<text x="${cx}" y="${h - 14}" text-anchor="middle" class="lbl-strong">${esc(g.label)}</text>`;
+  });
+  if (yTitle) {
+    body += `<text x="${m.l}" y="12" style="font-weight:600">${esc(yTitle)}</text>`;
+  }
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.innerHTML = body;
+}
+
+function lineChart(svg, series, { w = 520, h = 240, xVals = null, xMin = null, xMax = null, yMin = 0, yMax = null, xLabel = '', yLabel = '', xFmt = (v) => String(v), yFmt = (v) => fmt(v, 1) + '×', refLine = null, markers = [] } = {}) {
+  const m = { l: 48, r: 18, t: 20, b: 38 };
+  const allX = xVals || series.flatMap((s) => s.pts.map((p) => p.x));
+  const allY = series.flatMap((s) => s.pts.map((p) => p.y));
+  if (refLine != null) allY.push(refLine.y);
+  const loX = xMin != null ? xMin : Math.min(...allX);
+  const hiX = xMax != null ? xMax : Math.max(...allX);
+  const hiY = yMax != null ? yMax : Math.max(1.2, ...allY) * 1.12;
+  const x = linScale(loX, hiX, m.l, w - m.r);
+  const y = linScale(yMin, hiY, h - m.b, m.t);
+
+  let body = '';
+  niceTicks(yMin, hiY, 4).forEach((t) => {
+    body += `<line class="grid-l" x1="${m.l}" x2="${w - m.r}" y1="${y(t)}" y2="${y(t)}"/>`;
+    body += `<text x="${m.l - 6}" y="${y(t) + 4}" text-anchor="end">${esc(yFmt(t))}</text>`;
+  });
+  const xTicks = xVals ? Array.from(new Set(xVals)).sort((a, b) => a - b) : niceTicks(loX, hiX, 5);
+  xTicks.forEach((t) => {
+    body += `<line class="grid-l" x1="${x(t)}" x2="${x(t)}" y1="${m.t}" y2="${h - m.b}"/>`;
+    body += `<text x="${x(t)}" y="${h - m.b + 16}" text-anchor="middle">${esc(xFmt(t))}</text>`;
+  });
+  body += `<line class="axis" x1="${m.l}" x2="${w - m.r}" y1="${h - m.b}" y2="${h - m.b}"/>`;
+  body += `<line class="axis" x1="${m.l}" x2="${m.l}" y1="${m.t}" y2="${h - m.b}"/>`;
+
+  if (refLine != null) {
+    body += `<line x1="${m.l}" x2="${w - m.r}" y1="${y(refLine.y)}" y2="${y(refLine.y)}" stroke="${refLine.color || 'var(--c-a)'}" stroke-dasharray="5 4" stroke-width="1.5"/>`;
+    if (refLine.label) {
+      body += `<text x="${w - m.r}" y="${y(refLine.y) - 5}" text-anchor="end" style="fill:${refLine.color || 'var(--c-a)'};font-weight:600">${esc(refLine.label)}</text>`;
+    }
+  }
+
+  series.forEach((s) => {
+    const path = s.pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${x(p.x).toFixed(1)},${y(p.y).toFixed(1)}`).join(' ');
+    const dash = s.dash ? ` stroke-dasharray="${s.dash}"` : '';
+    const op = s.opacity != null ? ` opacity="${s.opacity}"` : '';
+    body += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.4}"${dash}${op}/>`;
+    if (!s.noDots) {
+      s.pts.forEach((p) => {
+        const tip = p.tip || `${s.name}: (${xFmt(p.x)}, ${yFmt(p.y)})`;
+        body += `<circle cx="${x(p.x).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="${s.r || 4}" fill="${s.color}" stroke="var(--surface)" stroke-width="1.5" tabindex="0"><title>${esc(tip)}</title></circle>`;
+      });
+    }
+  });
+
+  markers.forEach((mk) => {
+    const mx = x(mk.x), my = y(mk.y);
+    if (mk.vline) {
+      body += `<line x1="${mx.toFixed(1)}" x2="${mx.toFixed(1)}" y1="${m.t}" y2="${h - m.b}" stroke="${mk.color}" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+    }
+    body += `<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="${mk.r || 6}" fill="${mk.color}" stroke="var(--surface)" stroke-width="2" tabindex="0"><title>${esc(mk.tip || mk.label || '')}</title></circle>`;
+    if (mk.label) {
+      const anchor = mx > w - 110 ? 'end' : 'start';
+      const dx = anchor === 'end' ? -9 : 9;
+      body += `<text x="${(mx + dx).toFixed(1)}" y="${Math.max(m.t + 10, my - 7).toFixed(1)}" text-anchor="${anchor}" class="lbl-strong" style="fill:${mk.color}">${esc(mk.label)}</text>`;
+    }
+  });
+
+  if (yLabel) body += `<text x="${m.l}" y="12" style="font-weight:600">${esc(yLabel)}</text>`;
+  if (xLabel) body += `<text x="${(m.l + w - m.r) / 2}" y="${h - 4}" text-anchor="middle">${esc(xLabel)}</text>`;
+
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.innerHTML = body;
+}
+
+/* ============================================================
+   TAB 1: DRAFT, VERIFY & ROLLBACK
+   ============================================================ */
+const tState = {
+  proposer: 'ngram',
+  workload: 'code',
+  k: 4,
+  seed: 7,
+  trace: null,
+  stepIdx: 1, // number of revealed rounds (1..totalRounds)
+  timer: null,
+  verifyModel: '0.5B'
+};
+
+function stopPlay() {
+  if (tState.timer) {
+    clearInterval(tState.timer);
+    tState.timer = null;
+  }
+  const btn = $('tPlay');
+  if (btn) btn.textContent = 'Play';
+}
+
+function rebuildTrace(resetStep) {
+  stopPlay();
+  tState.trace = S.simulateTrace({
+    workload: tState.workload,
+    proposer: tState.proposer,
+    k: tState.k,
+    seed: tState.seed,
+    maxTokens: 20
+  });
+  if (resetStep === 'start') tState.stepIdx = 1;
+  else if (resetStep === 'end' || tState.stepIdx > tState.trace.totalRounds) tState.stepIdx = tState.trace.totalRounds;
+  renderTab1();
+}
+
+function fmtTok(tok) {
+  return tok === '\n' ? '↵' : tok;
+}
+
+function renderTab1() {
+  const tr = tState.trace;
+  const shown = tr.rounds.slice(0, tState.stepIdx);
+  const cur = shown[shown.length - 1];
+  const emittedSoFar = shown.reduce((a, r) => a + r.emittedThisRound.length, 0);
+  const costSoFar = shown.reduce((a, r) => a + r.costSteps, 0);
+  const effSpd = costSoFar > 0 ? emittedSoFar / costSoFar : 1;
+
+  $('vTK').textContent = String(tState.k);
+  $('tPrompt').innerHTML = `<b>Prompt (${esc(tr.workloadLabel)}):</b> ${esc(tr.prompt)}`;
+
+  $('tKpis').innerHTML = [
+    kpi('c', `${emittedSoFar} tok / ${shown.length} rnd`, `round ${shown.length} of ${tr.totalRounds} (plain greedy: ${emittedSoFar} steps)`),
+    kpi('b', `${fmt(emittedSoFar / shown.length, 2)}`, `tokens / round (law E = ${fmt(tr.theoreticalTokensPerRound, 2)}, α = ${fmt(tr.alpha, 2)})`),
+    kpi(effSpd >= 1 ? 'b' : 'bad', `${fmt(effSpd, 2)}×`, `net speedup vs plain (cost = ${fmt(cur.k * tr.c + tr.v, 2)} steps/rnd)`),
+    kpi('b', tr.exactParity ? '100% exact' : 'mismatch', 'parity vs greedy decoding')
+  ].join('');
+
+  // Active round inspector
+  const draftPills = cur.drafts.map((tok, i) => {
+    const cls = cur.statuses[i] === 'accepted' ? 'acc' : 'rej';
+    const mark = cur.statuses[i] === 'accepted' ? '✓' : '✗';
+    return `<span class="tok ${cls}">${esc(fmtTok(tok))}<span class="tag">${mark}</span></span>`;
+  }).join('');
+
+  const verifyPills = cur.drafts.map((tok, i) => {
+    if (i < cur.acceptedCount) {
+      return `<span class="tok acc">${esc(fmtTok(tok))}<span class="tag">keep</span></span>`;
+    }
+    if (i === cur.acceptedCount) {
+      return `<span class="tok bon">${esc(fmtTok(cur.bonusToken))}<span class="tag">fix</span></span>`;
+    }
+    return `<span class="tok rej">${esc(fmtTok(tok))}<span class="tag">drop</span></span>`;
+  }).join('') + (cur.acceptedCount === cur.k
+    ? `<span class="tok bon">${esc(fmtTok(cur.bonusToken))}<span class="tag">+1 bonus</span></span>`
+    : '');
+
+  const kvMax = Math.max(cur.kvPeak, 60);
+  const wBase = (cur.kvBefore / kvMax) * 100;
+  const wKeep = (cur.acceptedCount / kvMax) * 100;
+  const wBon = (1 / kvMax) * 100;
+  const wDrop = (cur.rejectedCount / kvMax) * 100;
+
+  $('tInspector').innerHTML = `
+    <div class="stage-grid">
+      <div class="stage-row">
+        <span class="stage-lbl">Round ${cur.roundIndex} / ${tr.totalRounds}</span>
+        <span class="small"><b>${esc(tr.proposerLabel)}</b> drafts ${cur.k} tokens (cost ${(cur.k * tr.c).toFixed(2)}×), then 1 target verify pass (cost ${tr.v.toFixed(2)}×) checks all ${cur.k + 1} positions at once.</span>
+      </div>
+      <div class="stage-row">
+        <span class="stage-lbl">1. Draft (${cur.k})</span>
+        <div class="tok-strip">${draftPills}</div>
+      </div>
+      <div class="stage-row">
+        <span class="stage-lbl">2. Target verify</span>
+        <div class="tok-strip">${verifyPills}</div>
+      </div>
+    </div>
+    <div class="kv-bar">
+      <span>KV cache length: <b>${cur.kvBefore}</b> &rarr; peak <b>${cur.kvPeak}</b> &rarr; rollback to <b>${cur.kvAfter}</b> (${cur.rejectedCount} dropped)</span>
+      <div class="kv-track" aria-hidden="true">
+        <div class="kv-seg-base" style="width:${wBase.toFixed(1)}%"></div>
+        <div class="kv-seg-keep" style="width:${wKeep.toFixed(1)}%"></div>
+        <div class="kv-seg-bon" style="width:${wBon.toFixed(1)}%"></div>
+        <div class="kv-seg-drop" style="width:${wDrop.toFixed(1)}%"></div>
+      </div>
+    </div>`;
+
+  // Speculative vs greedy output tapes
+  let specHtml = '';
+  let refHtml = '';
+  shown.forEach((r, idx) => {
+    if (idx > 0) specHtml += `<span class="round-sep" title="Round ${r.roundIndex}"></span>`;
+    r.emittedThisRound.forEach((item) => {
+      const cls = item.kind === 'accepted' ? 'acc' : 'bon';
+      specHtml += `<span class="tok ${cls}" title="Round ${item.round}: ${item.kind}">${esc(fmtTok(item.token))}</span>`;
+      refHtml += `<span class="tok ref">${esc(fmtTok(item.token))}</span>`;
+    });
+  });
+  $('tSpecTape').innerHTML = specHtml;
+  $('tRefTape').innerHTML = refHtml;
+  $('tParity').textContent = `Exact greedy match: ${emittedSoFar}/${emittedSoFar} tokens identical`;
+  $('tRefMeta').textContent = `${emittedSoFar} sequential target passes vs ${shown.length} verify rounds`;
+
+  const actionNote = cur.rejectedCount === 0
+    ? `All ${cur.k} drafted tokens matched the target's greedy argmax, earning the free +1 bonus token ("${fmtTok(cur.bonusToken)}") for ${cur.k + 1} tokens in one verify pass.`
+    : `First mismatch at draft #${cur.acceptedCount + 1}: target overrides it with "${fmtTok(cur.bonusToken)}" and discards ${cur.rejectedCount} drafted token${cur.rejectedCount > 1 ? 's' : ''}. Rollback only decrements the KV length pointer (${cur.kvPeak} → ${cur.kvAfter}).`;
+  $('tCallout').innerHTML = `<b>Round ${cur.roundIndex}:</b> ${esc(actionNote)} <span class="small">${esc(tr.proposerNote)}</span>`;
+
+  renderRoundsSvg(tr, tState.stepIdx);
+}
+
+function renderRoundsSvg(tr, activeCount) {
+  const svg = $('tRoundsChart');
+  const w = 680;
+  const rowH = 22;
+  const gap = 6;
+  const m = { l: 64, r: 90, t: 18, b: 28 };
+  const h = m.t + m.b + tr.rounds.length * (rowH + gap);
+  const maxUnits = tr.k + 1;
+  const x = linScale(0, maxUnits, m.l, w - m.r);
+  const unitW = (w - m.l - m.r) / maxUnits;
+
+  let body = '';
+  for (let u = 0; u <= maxUnits; u++) {
+    body += `<line class="grid-l" x1="${x(u)}" x2="${x(u)}" y1="${m.t}" y2="${h - m.b}"/>`;
+    body += `<text x="${x(u)}" y="${h - 10}" text-anchor="middle">${u}</text>`;
+  }
+  tr.rounds.forEach((r, i) => {
+    const y0 = m.t + i * (rowH + gap);
+    const dim = i >= activeCount ? ' opacity="0.28"' : '';
+    const isCur = i === activeCount - 1;
+    body += `<g${dim}>`;
+    body += `<text x="${m.l - 8}" y="${y0 + rowH / 2 + 4}" text-anchor="end" class="${isCur ? 'lbl-strong' : ''}">Rnd ${r.roundIndex}</text>`;
+    let cx = m.l;
+    if (r.acceptedCount > 0) {
+      const aw = r.acceptedCount * unitW;
+      body += `<rect x="${cx}" y="${y0 + 2}" width="${Math.max(2, aw - 2)}" height="${rowH - 4}" rx="4" fill="var(--c-b)" tabindex="0"><title>Round ${r.roundIndex}: ${r.acceptedCount} accepted draft tokens</title></rect>`;
+      cx += aw;
+    }
+    body += `<rect x="${cx}" y="${y0 + 2}" width="${Math.max(2, unitW - 2)}" height="${rowH - 4}" rx="4" fill="var(--c-c)" tabindex="0"><title>Round ${r.roundIndex}: +1 target ${r.bonusKind} token ("${r.bonusToken}")</title></rect>`;
+    cx += unitW;
+    if (r.rejectedCount > 0) {
+      const rw = r.rejectedCount * unitW;
+      body += `<rect x="${cx}" y="${y0 + 4}" width="${Math.max(2, rw - 2)}" height="${rowH - 8}" rx="3" fill="var(--bad)" opacity="0.45" tabindex="0"><title>Round ${r.roundIndex}: ${r.rejectedCount} rolled-back draft tokens</title></rect>`;
+    }
+    body += `<text x="${w - m.r + 8}" y="${y0 + rowH / 2 + 4}" class="${isCur ? 'lbl-strong' : ''}">+${r.emittedThisRound.length} tok</text>`;
+    body += `</g>`;
+  });
+  body += `<text x="${(m.l + w - m.r) / 2}" y="${m.t - 5}" text-anchor="middle" style="font-weight:600">Tokens per round (max k + 1 = ${maxUnits})</text>`;
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.innerHTML = body;
+}
+
+function renderVerifyCost() {
+  const is3b = tState.verifyModel === '3B';
+  const rows = is3b
+    ? D.stage7.verify_cost.filter((r) => r.target === '3b')
+    : D.stage6.verify_cost;
+  const batches = [1, 4, 16, 64];
+  const colors = { 1: 'var(--c-b)', 4: 'var(--c-c)', 16: 'var(--c-d)', 64: 'var(--c-a)' };
+  const xVals = Array.from(new Set(rows.map((r) => r.tokens_per_seq))).sort((a, b) => a - b);
+
+  const series = batches.map((b) => ({
+    name: `batch ${b}`,
+    color: colors[b],
+    pts: rows
+      .filter((r) => r.batch === b)
+      .sort((a, b2) => a.tokens_per_seq - b2.tokens_per_seq)
+      .map((r) => ({
+        x: r.tokens_per_seq,
+        y: r.rel_to_one_token,
+        tip: `Batch ${b}, ${r.tokens_per_seq} tokens/seq: ${fmt(r.ms, 1)} ms (${fmt(r.rel_to_one_token, 2)}× of 1-token step)`
+      }))
+  }));
+
+  lineChart($('mVerifyCost'), series, {
+    w: 680,
+    h: 240,
+    xVals,
+    yMin: 0.8,
+    xLabel: 'Tokens verified per sequence in one target pass (k + 1)',
+    yLabel: 'Step latency relative to 1-token decode (v)',
+    xFmt: (v) => String(v),
+    yFmt: (v) => fmt(v, 2) + '×',
+    refLine: { y: 1.0, label: '1.0× (free extra tokens)', color: 'var(--muted)' }
+  });
+
+  $('mVerifyLegend').innerHTML = batches
+    .map((b) => `<span><i style="background:${colors[b]}"></i>batch ${b}</span>`)
+    .join('');
+
+  const b1_9 = rows.find((r) => r.batch === 1 && r.tokens_per_seq === 9);
+  const b64_9 = rows.find((r) => r.batch === 64 && r.tokens_per_seq === 9);
+  const oracle8 = D.stage6.oracle.find((r) => r.k === 8);
+  $('mVerifyNote').innerHTML = is3b
+    ? `<b>Stage 7 (Qwen2.5-3B fp16):</b> At batch 1, checking 9 tokens (k = 8) costs only <b>${fmt(b1_9.rel_to_one_token, 2)}×</b> a single-token step (${fmt(b1_9.ms, 1)} ms vs ${fmt(rows.find((r) => r.batch === 1 && r.tokens_per_seq === 1).ms, 1)} ms). At batch 64, weights are already amortized across 64 rows so checking 9 tokens jumps to <b>${fmt(b64_9.rel_to_one_token, 2)}×</b> — speculation belongs to low-batch latency mode.`
+    : `<b>Stage 6 (Qwen2.5-0.5B fp16):</b> Checking 9 tokens at batch 1 costs <b>${fmt(b1_9.rel_to_one_token, 2)}×</b> (an always-right oracle at k = 8 reaches <b>${fmt(oracle8.speedup_x, 2)}×</b> speedup). At batch 64, checking 9 tokens rises to <b>${fmt(b64_9.rel_to_one_token, 2)}×</b>, shrinking the free-verify window.`;
+}
+
+bindSeg('tProp', (v) => { tState.proposer = v; rebuildTrace('start'); });
+bindSeg('tWork', (v) => { tState.workload = v; rebuildTrace('start'); });
+bindSeg('vCostModel', (v) => { tState.verifyModel = v; renderVerifyCost(); });
+$('tK').addEventListener('input', (e) => { tState.k = Number(e.target.value); rebuildTrace('start'); });
+$('tStep').addEventListener('click', () => {
+  stopPlay();
+  if (tState.stepIdx < tState.trace.totalRounds) tState.stepIdx += 1;
+  else tState.stepIdx = 1;
+  renderTab1();
+});
+$('tReset').addEventListener('click', () => { stopPlay(); tState.stepIdx = 1; renderTab1(); });
+$('tSeed').addEventListener('click', () => { tState.seed = (tState.seed * 37 + 13) % 997 + 1; rebuildTrace('start'); });
+$('tPlay').addEventListener('click', () => {
+  if (tState.timer) { stopPlay(); return; }
+  if (tState.stepIdx >= tState.trace.totalRounds) tState.stepIdx = 1;
+  renderTab1();
+  $('tPlay').textContent = 'Pause';
+  const interval = window.mlViz && window.mlViz.reducedMotion() ? 950 : 650;
+  tState.timer = setInterval(() => {
+    if (tState.stepIdx >= tState.trace.totalRounds) { stopPlay(); return; }
+    tState.stepIdx += 1;
+    renderTab1();
+  }, interval);
+});
+
+/* ============================================================
+   TAB 2: THE SPEEDUP LAW
+   ============================================================ */
+const LAW_PRESETS = {
+  ngram_fp16: { alpha: 0.91, k: 6, c: 0.00, v: 1.02, desc: 'Stage 7/11 free n-gram on 3B fp16 copy: c = 0 and v ≈ 1.02 let speedups climb cleanly with k.' },
+  draft_eager: { alpha: 0.89, k: 4, c: 0.84, v: 1.10, desc: 'Stage 7 eager 0.5B draft for 1.5B target: c = 0.84 makes 4 draft steps cost 3.36 target steps — slower than plain decoding (0.88× measured)!' },
+  draft_graph: { alpha: 0.90, k: 4, c: 0.27, v: 1.09, desc: 'Stage 7 CUDA-graphed 0.5B draft for 3B target: capturing the draft cuts c from 0.62 to 0.27, turning eager losses into a ~1.9× win.' },
+  int8_self: { alpha: 0.98, k: 4, c: 0.56, v: 1.01, desc: 'Stage 9 int8 self-draft for 3B fp16: near-perfect acceptance (α = 0.98), yet c = 0.56 caps the speedup — heavy drafts pay a steep tax.' },
+  int8_verify: { alpha: 0.98, k: 4, c: 0.00, v: 1.94, desc: 'Stage 11 int8 target + free n-gram: even with c = 0 and α = 0.98, a 1.94× verify pass cuts the n-gram gain nearly in half.' }
+};
+
+const lawState = {
+  alpha: 0.91,
+  k: 6,
+  c: 0.00,
+  v: 1.02,
+  preset: 'ngram_fp16',
+  scoreStage: 's7',
+  scoreTarget: '3B'
+};
+
+function syncLawInputs() {
+  $('sAlpha').value = String(lawState.alpha);
+  $('sK').value = String(lawState.k);
+  $('sC').value = String(lawState.c);
+  $('sV').value = String(lawState.v);
+}
+
+function renderLaw() {
+  const { alpha, k, c, v } = lawState;
+  $('vAlpha').textContent = fmt(alpha, 2);
+  $('vK').textContent = String(k);
+  $('vC').textContent = fmt(c, 2);
+  $('vV').textContent = fmt(v, 2) + '×';
+
+  const exp = S.expectedTokens(alpha, k);
+  const cost = k * c + v;
+  const spd = S.specSpeedup(alpha, k, c, v);
+  const opt = S.optimalK(alpha, c, v, 12);
+  const alphaMin = S.breakEvenAlpha(k, c, v);
+
+  $('lawKpis').innerHTML = [
+    kpi('c', fmt(exp, 2), 'E[tokens / round]'),
+    kpi('', fmt(cost, 2) + '×', `round cost (k·c + v)`),
+    kpi(spd >= 1 ? 'b' : 'bad', fmt(spd, 2) + '×', spd >= 1 ? 'net speedup (wins)' : 'net speedup (slower than plain!)'),
+    kpi('d', `k* = ${opt.k} (${fmt(opt.speedup, 2)}×)`, alphaMin == null ? 'break-even α: impossible' : `break-even α ≥ ${fmt(alphaMin, 2)}`)
+  ].join('');
+
+  const pDesc = lawState.preset && LAW_PRESETS[lawState.preset] ? LAW_PRESETS[lawState.preset].desc : '';
+  const verdict = spd < 1
+    ? `At k = ${k}, c = ${fmt(c, 2)}, v = ${fmt(v, 2)}, each round costs ${fmt(cost, 2)} plain steps while emitting only ${fmt(exp, 2)} tokens — a <b>${fmt((1 - spd) * 100, 0)}% slowdown</b>.`
+    : `Each round emits ${fmt(exp, 2)} tokens for ${fmt(cost, 2)} plain-step equivalents (<b>${fmt(spd, 2)}×</b> faster). Best lookahead in 1..12 is <b>k* = ${opt.k}</b> (${fmt(opt.speedup, 2)}×).`;
+  $('lawNote').innerHTML = `${verdict}${pDesc ? ' <span class="small">' + esc(pDesc) + '</span>' : ''}`;
+
+  // Chart 1: Speedup vs k (1..12)
+  const ks = [];
+  for (let kk = 1; kk <= 12; kk++) ks.push(kk);
+  const curPts = ks.map((kk) => ({
+    x: kk,
+    y: S.specSpeedup(alpha, kk, c, v),
+    tip: `k = ${kk}: E[tok] = ${fmt(S.expectedTokens(alpha, kk), 2)}, cost = ${fmt(kk * c + v, 2)}×, speedup = ${fmt(S.specSpeedup(alpha, kk, c, v), 2)}×`
+  }));
+  const idealPts = ks.map((kk) => ({
+    x: kk,
+    y: S.specSpeedup(alpha, kk, 0, 1),
+    tip: `Ideal (c=0, v=1) at k = ${kk}: ${fmt(S.specSpeedup(alpha, kk, 0, 1), 2)}×`
+  }));
+
+  lineChart($('lawVsK'), [
+    { name: 'ideal (c=0, v=1)', color: 'var(--muted)', dash: '4 4', opacity: 0.6, width: 1.8, noDots: true, pts: idealPts },
+    { name: 'current (c, v)', color: 'var(--c-c)', pts: curPts }
+  ], {
+    w: 500,
+    h: 235,
+    xVals: ks,
+    yMin: 0,
+    xLabel: 'Lookahead k (drafted tokens per round)',
+    yLabel: 'Speedup vs plain decode',
+    refLine: { y: 1.0, label: '1.0× break-even', color: 'var(--c-a)' },
+    markers: [
+      { x: opt.k, y: opt.speedup, color: 'var(--c-b)', r: 5.5, label: `k*=${opt.k} (${fmt(opt.speedup, 2)}×)`, tip: `Optimal k* = ${opt.k}: ${fmt(opt.speedup, 2)}×` },
+      { x: k, y: spd, color: spd >= 1 ? 'var(--c-c)' : 'var(--bad)', r: 6.5, vline: true, tip: `Selected k = ${k}: ${fmt(spd, 2)}×` }
+    ]
+  });
+
+  // Chart 2: Speedup vs alpha (0..1)
+  const aPts = [];
+  for (let i = 0; i <= 50; i++) {
+    const a = i / 50;
+    const s = S.specSpeedup(a, k, c, v);
+    aPts.push({ x: a, y: s, tip: `α = ${fmt(a, 2)}: E[tok] = ${fmt(S.expectedTokens(a, k), 2)}, speedup = ${fmt(s, 2)}×` });
+  }
+  const aMarkers = [
+    { x: alpha, y: spd, color: spd >= 1 ? 'var(--c-b)' : 'var(--bad)', r: 6.5, vline: true, label: `α=${fmt(alpha, 2)} (${fmt(spd, 2)}×)`, tip: `Current α = ${fmt(alpha, 2)}: ${fmt(spd, 2)}×` }
+  ];
+  if (alphaMin != null && alphaMin > 0 && alphaMin < 1) {
+    aMarkers.push({ x: alphaMin, y: 1.0, color: 'var(--c-a)', r: 4.5, label: `α_min=${fmt(alphaMin, 2)}`, tip: `Break-even α = ${fmt(alphaMin, 2)}` });
+  }
+
+  lineChart($('lawVsAlpha'), [
+    { name: 'speedup(α)', color: 'var(--c-b)', noDots: true, pts: aPts }
+  ], {
+    w: 500,
+    h: 235,
+    xMin: 0,
+    xMax: 1,
+    yMin: 0,
+    xLabel: 'Per-token acceptance rate α',
+    yLabel: 'Speedup vs plain decode',
+    xFmt: (v2) => fmt(v2, 1),
+    refLine: { y: 1.0, label: '1.0× break-even', color: 'var(--c-a)' },
+    markers: aMarkers
+  });
+}
+
+function renderCostRatioChart() {
+  const targets = [
+    { key: '1p5b', label: '0.5B → 1.5B target' },
+    { key: '3b', label: '0.5B → 3B target' }
+  ];
+  const groups = targets.map((t) => {
+    const eager = D.stage7.cost.find((r) => r.target === t.key && r.mode === 'eager');
+    const graph = D.stage7.cost.find((r) => r.target === t.key && r.mode === 'graph');
+    return {
+      label: t.label,
+      bars: [
+        { name: 'weight ratio', v: eager.weight_ratio, color: 'var(--muted)', tip: `${t.label} — weight ratio: ${fmt(eager.weight_ratio, 2)}×` },
+        { name: 'eager draft c', v: eager.c, color: 'var(--c-a)', tip: `${t.label} — eager c = ${fmt(eager.c, 2)} (${fmt(eager.draft_ms, 1)} ms / ${fmt(eager.target_ms, 1)} ms)` },
+        { name: 'CUDA graph c', v: graph.c, color: 'var(--c-b)', tip: `${t.label} — CUDA graph c = ${fmt(graph.c, 2)} (${fmt(graph.draft_ms, 1)} ms / ${fmt(graph.target_ms, 1)} ms)` }
+      ]
+    };
+  });
+
+  groupedBarChart($('mCostRatio'), groups, {
+    w: 620,
+    h: 220,
+    fmtV: (v) => fmt(v, 2),
+    yTitle: 'Draft step cost as fraction of 1 target step (c, lower = cheaper)',
+    max: 1.0
+  });
+}
+
+function renderScoreboard() {
+  const workloads = ['copy', 'code', 'open'];
+  const wlNames = { copy: 'Copy', code: 'Code', open: 'Open prose' };
+
+  if (lawState.scoreStage === 's7') {
+    const tKey = lawState.scoreTarget === '3B' ? '3b' : '1p5b';
+    const rows = D.stage7.sweep.filter((r) => r.target === tKey && r.k === 4);
+    const props = [
+      { key: 'n-gram', label: 'N-gram (k=4)', color: 'var(--c-b)' },
+      { key: 'draft eager', label: '0.5B eager (k=4)', color: 'var(--bad)' },
+      { key: 'draft graph', label: '0.5B CUDA graph (k=4)', color: 'var(--c-c)' }
+    ];
+    const groups = workloads.map((w) => ({
+      label: wlNames[w],
+      bars: props.map((p) => {
+        const r = rows.find((x) => x.workload === w && x.proposer === p.key);
+        return {
+          name: p.label,
+          v: r.speedup_x,
+          color: p.color,
+          tip: `${lawState.scoreTarget} ${w} — ${p.label}: ${fmt(r.speedup_x, 2)}× (${fmt(r.tok_s, 1)} tok/s, α=${fmt(r.alpha, 2)}, ${fmt(r.tokens_per_step, 2)} tok/rnd)`
+        };
+      })
+    }));
+    groupedBarChart($('mScoreChart'), groups, {
+      w: 680,
+      h: 245,
+      fmtV: (v) => fmt(v, 2) + '×',
+      yTitle: `Stage 7 speedup vs fp16 plain (${lawState.scoreTarget}, k = 4)`,
+      refLine: { y: 1.0, label: '1.0× plain fp16', color: 'var(--muted)' }
+    });
+    $('mScoreLegend').innerHTML = props.map((p) => `<span><i style="background:${p.color}"></i>${p.label}</span>`).join('');
+    let th = '<thead><tr><th>Workload</th><th>Proposer (k=4)</th><th>&alpha;</th><th>Tok/round</th><th>Throughput</th><th>Speedup</th><th>Exact</th></tr></thead><tbody>';
+    workloads.forEach((w) => {
+      props.forEach((p) => {
+        const r = rows.find((x) => x.workload === w && x.proposer === p.key);
+        const cls = r.speedup_x >= 1 ? 'num-good' : 'num-bad';
+        th += `<tr><td>${wlNames[w]}</td><td>${p.label}</td><td>${fmt(r.alpha, 2)}</td><td>${fmt(r.tokens_per_step, 2)}</td><td>${fmt(r.tok_s, 1)} tok/s</td><td class="${cls}">${fmt(r.speedup_x, 2)}×</td><td>${r.exact ? '✓' : 'near-tie'}</td></tr>`;
+      });
+    });
+    $('mScoreTable').innerHTML = th + '</tbody>';
+    $('mScoreNote').innerHTML = `<b>Stage 7 takeaway (${lawState.scoreTarget}):</b> Eager 0.5B drafting hits high acceptance (&alpha; = 0.76–0.94) yet <em>loses</em> to plain decoding on 1.5B (${fmt(D.stage7.sweep.find((r) => r.target === '1p5b' && r.workload === 'open' && r.proposer === 'draft eager' && r.k === 4).speedup_x, 2)}× on open) because eager c = 0.84. CUDA-graphing the draft flips every workload positive, while free n-gram still wins copy &amp; code.`;
+  } else {
+    const tKey = lawState.scoreTarget;
+    const rows = D.stage9.speculation.filter((r) => r.target === tKey && r.weights === 'fp16' && r.k === 4);
+    const accRows = D.stage9.acceptance.filter((r) => r.target === tKey);
+    const props = [
+      { key: 'fp16 n-gram', accKey: 'n-gram', label: 'N-gram (k=4)', color: 'var(--c-b)' },
+      { key: 'fp16 0.5B draft (graph)', accKey: '0.5B draft', label: '0.5B graph (k=4)', color: 'var(--c-c)' },
+      { key: 'fp16 int8 self-draft (graph)', accKey: 'int8 self-draft', label: 'Int8 self-draft (graph)', color: 'var(--c-a)' }
+    ];
+    const groups = workloads.map((w) => ({
+      label: wlNames[w],
+      bars: props.map((p) => {
+        const r = rows.find((x) => x.workload === w && x.setup === p.key);
+        const ar = accRows.find((x) => x.workload === w && x.proposer === p.accKey);
+        return {
+          name: p.label,
+          v: r.vs_fp16_plain,
+          color: p.color,
+          tip: `${tKey} ${w} — ${p.label}: ${fmt(r.vs_fp16_plain, 2)}× (${fmt(r.tok_s, 1)} tok/s, α=${fmt(ar.alpha, 3)}, ${fmt(ar.tokens_per_step, 2)} tok/rnd)`
+        };
+      })
+    }));
+    groupedBarChart($('mScoreChart'), groups, {
+      w: 680,
+      h: 245,
+      fmtV: (v) => fmt(v, 2) + '×',
+      yTitle: `Stage 9 speedup vs fp16 plain (${tKey}, k = 4)`,
+      refLine: { y: 1.0, label: '1.0× plain fp16', color: 'var(--muted)' }
+    });
+    $('mScoreLegend').innerHTML = props.map((p) => `<span><i style="background:${p.color}"></i>${p.label}</span>`).join('');
+    let th = '<thead><tr><th>Workload</th><th>Proposer (k=4)</th><th>Acceptance &alpha;</th><th>Tok/round</th><th>Throughput</th><th>vs fp16 plain</th></tr></thead><tbody>';
+    workloads.forEach((w) => {
+      props.forEach((p) => {
+        const r = rows.find((x) => x.workload === w && x.setup === p.key);
+        const ar = accRows.find((x) => x.workload === w && x.proposer === p.accKey);
+        const cls = r.vs_fp16_plain >= 1 ? 'num-good' : 'num-bad';
+        th += `<tr><td>${wlNames[w]}</td><td>${p.label}</td><td>${fmt(ar.alpha, 3)}</td><td>${fmt(ar.tokens_per_step, 2)}</td><td>${fmt(r.tok_s, 1)} tok/s</td><td class="${cls}">${fmt(r.vs_fp16_plain, 2)}×</td></tr>`;
+      });
+    });
+    $('mScoreTable').innerHTML = th + '</tbody>';
+    const cSelf = D.stage9.cost_ratio.find((r) => r.target === tKey && r.draft === 'int8 self-draft' && r.mode === 'graph');
+    const c5 = D.stage9.check_cost.find((r) => r.model === tKey && r.variant === 'int8 triton' && r.tokens_per_seq === 5);
+    $('mScoreNote').innerHTML = `<b>Stage 9 lesson (${tKey}):</b> Int8 self-draft achieves extraordinary acceptance (<b>&alpha; = 0.97–1.00</b>, up to 5.0 tok/round!), yet still runs at <b>0.35–0.62×</b> because drafting in int8 costs <b>c = ${fmt(cSelf.c, 2)}</b> per token and Stage 9's 5-token int8 check pass exploded to <b>${fmt(c5.rel_to_one_token, 2)}×</b> — motivating Stages 10 &amp; 11.`;
+  }
+}
+
+$('lawPresets').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-id]');
+  if (!btn) return;
+  const p = LAW_PRESETS[btn.dataset.id];
+  if (!p) return;
+  lawState.alpha = p.alpha;
+  lawState.k = p.k;
+  lawState.c = p.c;
+  lawState.v = p.v;
+  lawState.preset = btn.dataset.id;
+  Array.prototype.forEach.call($('lawPresets').querySelectorAll('button'), (b) => b.setAttribute('aria-pressed', String(b === btn)));
+  syncLawInputs();
+  renderLaw();
+});
+
+['sAlpha', 'sK', 'sC', 'sV'].forEach((id) => {
+  $(id).addEventListener('input', () => {
+    lawState.alpha = Number($('sAlpha').value);
+    lawState.k = Number($('sK').value);
+    lawState.c = Number($('sC').value);
+    lawState.v = Number($('sV').value);
+    lawState.preset = null;
+    Array.prototype.forEach.call($('lawPresets').querySelectorAll('button'), (b) => b.setAttribute('aria-pressed', 'false'));
+    renderLaw();
+  });
+});
+
+bindSeg('mScoreStage', (v) => { lawState.scoreStage = v; renderScoreboard(); });
+bindSeg('mScoreTarget', (v) => { lawState.scoreTarget = v; renderScoreboard(); });
+
+/* ============================================================
+   TAB 3: WHY INT8 & SPECULATION DON'T MULTIPLY
+   ============================================================ */
+const cState = {
+  int8Metric: 'ms',
+  blockTarget: '3B',
+  multTarget: '3B',
+  multK: 4,
+  bestTarget: '3B'
+};
+
+function renderInt8Win() {
+  const sizes = ['0.5B', '1.5B', '3B'];
+  const isMs = cState.int8Metric === 'ms';
+
+  const groups = sizes.map((sz) => {
+    const fp8 = D.stage8.speed.find((r) => r.model === sz && r.variant === 'fp16' && r.mode === 'eager');
+    const ptE = D.stage8.speed.find((r) => r.model === sz && r.variant === 'int8' && r.mode === 'eager');
+    const ptC = D.stage8.speed.find((r) => r.model === sz && r.variant === 'int8' && r.mode === 'compiled');
+    const trG = D.stage10.plain.find((r) => r.model === sz && r.variant === 'int8' && r.mode === 'graph');
+    const mk = (name, ms, color) => ({
+      name,
+      v: isMs ? ms : fp8.median_ms / ms,
+      color,
+      tip: `${sz} ${name}: ${fmt(ms, 1)} ms/tok (${fmt(fp8.median_ms / ms, 2)}× vs fp16 eager)`
+    });
+    return {
+      label: `Qwen2.5-${sz}`,
+      bars: [
+        mk('fp16 eager', fp8.median_ms, 'var(--muted)'),
+        mk('PyTorch int8 eager', ptE.median_ms, 'var(--bad)'),
+        mk('PyTorch int8 compiled', ptC.median_ms, 'var(--c-a)'),
+        mk('Fused Triton int8 + graph', trG.step_ms, 'var(--c-b)')
+      ]
+    };
+  });
+
+  groupedBarChart($('mInt8Chart'), groups, {
+    w: 680,
+    h: 250,
+    fmtV: (v) => isMs ? `${fmt(v, 1)}ms` : `${fmt(v, 2)}×`,
+    yTitle: isMs ? 'Batch-1 decode step time (ms, lower is better)' : 'Speedup relative to fp16 eager (higher is better)',
+    refLine: isMs ? null : { y: 1.0, label: '1.0× fp16 eager', color: 'var(--muted)' }
+  });
+
+  // Memory & perplexity tables
+  let mh = '<thead><tr><th>Model</th><th>fp16</th><th>int8</th><th>Saved</th></tr></thead><tbody>';
+  sizes.forEach((sz) => {
+    const f = D.stage8.memory.find((r) => r.model === sz && r.variant === 'fp16');
+    const q = D.stage8.memory.find((r) => r.model === sz && r.variant === 'int8');
+    const pct = ((f.stored_gib - q.stored_gib) / f.stored_gib) * 100;
+    mh += `<tr><td>${sz}</td><td>${fmt(f.stored_gib, 2)} GiB</td><td>${fmt(q.stored_gib, 2)} GiB</td><td class="num-good">&minus;${fmt(pct, 0)}%</td></tr>`;
+  });
+  $('mMemTable').innerHTML = mh + '</tbody>';
+
+  let ph = '<thead><tr><th>Model</th><th>Variant</th><th>Perplexity</th></tr></thead><tbody>';
+  D.stage8.perplexity.forEach((r) => {
+    const pplStr = r.ppl > 1000 ? `${(r.ppl / 1e6).toFixed(2)}M (fails!)` : fmt(r.ppl, 3);
+    const cls = r.variant.includes('wrong') ? 'num-bad' : r.variant.includes('per-channel') ? 'num-good' : '';
+    ph += `<tr><td>${r.model}</td><td>${esc(r.variant)}</td><td class="${cls}">${pplStr}</td></tr>`;
+  });
+  $('mPplTable').innerHTML = ph + '</tbody>';
+}
+
+function renderBlockCost() {
+  const sz = cState.blockTarget;
+  const rows = D.stage11.block_cost.filter((r) => r.model === sz);
+  const variants = [
+    { key: 'fp16', name: 'fp16 graph', color: 'var(--c-b)' },
+    { key: 'int8 Stage 10 kernel', name: 'int8 Stage 10 kernel', color: 'var(--bad)' },
+    { key: 'int8 this stage', name: 'int8 Stage 11 rewrite', color: 'var(--c-a)' }
+  ];
+  const xVals = [1, 2, 3, 5, 7];
+  const series = variants.map((va) => ({
+    name: va.name,
+    color: va.color,
+    pts: xVals.map((tok) => {
+      const r = rows.find((x) => x.variant === va.key && x.tokens === tok);
+      return {
+        x: tok,
+        y: r.rel_to_one_token,
+        tip: `${sz} ${va.name} @ ${tok} tokens: ${fmt(r.median_ms, 1)} ms (${fmt(r.rel_to_one_token, 2)}× of 1-token step)`
+      };
+    })
+  }));
+
+  lineChart($('mBlockChart'), series, {
+    w: 680,
+    h: 250,
+    xVals,
+    yMin: 0.9,
+    yMax: 2.75,
+    xLabel: 'Tokens verified in one CUDA-graphed forward pass (k + 1)',
+    yLabel: 'Verify pass cost relative to 1-token step (v)',
+    xFmt: (v) => String(v),
+    yFmt: (v) => fmt(v, 2) + '×',
+    refLine: { y: 1.3, label: 'Stage 11 go threshold (v ≤ 1.30×)', color: 'var(--muted)' }
+  });
+
+  const vFp = D.stage11.verdict.v_fp16[sz];
+  const vOld = D.stage11.verdict.v_old[sz];
+  const vNew = D.stage11.verdict.v_new[sz];
+  $('mBlockNote').innerHTML = `<b>${sz} @ 5-token verify pass (k = 4):</b> fp16 costs <b>${fmt(vFp, 2)}×</b>, Stage 10 int8 cost <b>${fmt(vOld, 2)}×</b>, and Stage 11's rewritten multi-row Triton kernel lowered it to <b>${fmt(vNew, 2)}×</b> — still well above the 1.30× go gate (verdict: <b>${esc(D.stage11.verdict.v_verdict)}</b>). Reading int8 weights once saves bandwidth, but dequantizing and computing across 5–7 rows saturates the Tesla T4's power-capped arithmetic (~12.3 FMA/byte).`;
+}
+
+function renderNonComposition() {
+  const sz = cState.multTarget;
+  const k = Number(cState.multK);
+  const workloads = ['copy', 'code', 'open'];
+  const wlNames = { copy: 'Copy', code: 'Code', open: 'Open prose' };
+  const rows = workloads.map((w) => D.stage11.multiply.find((r) => r.target === sz && r.workload === w && r.k === k));
+
+  const groups = rows.map((r) => ({
+    label: wlNames[r.workload],
+    bars: [
+      { name: 'int8 alone', v: r.int8_alone, color: 'var(--c-c)', tip: `${sz} ${r.workload} — int8 alone: ${fmt(r.int8_alone, 2)}× vs fp16 graph` },
+      { name: 'n-gram alone (fp16)', v: r.ngram_alone_fp16, color: 'var(--c-b)', tip: `${sz} ${r.workload} — n-gram alone (fp16, k=${k}): ${fmt(r.ngram_alone_fp16, 2)}×` },
+      { name: 'naive product', v: r.product, hatch: true, color: 'var(--hatch)', tip: `${sz} ${r.workload} — naive product (int8 × n-gram): ${fmt(r.product, 2)}×` },
+      { name: 'measured both', v: r.measured_both, color: 'var(--c-a)', tip: `${sz} ${r.workload} — measured int8 + n-gram: ${fmt(r.measured_both, 2)}× (${fmt(r.both_over_product * 100, 1)}% of product, v_int8=${fmt(r.v_int8, 2)}×)` }
+    ]
+  }));
+
+  groupedBarChart($('mMultChart'), groups, {
+    w: 680,
+    h: 260,
+    fmtV: (v) => fmt(v, 2) + '×',
+    yTitle: `Speedup relative to fp16 graph plain (${sz}, k = ${k})`,
+    hatchId: 'hatch-mult',
+    refLine: { y: 1.0, label: '1.0× fp16 graph plain', color: 'var(--muted)' }
+  });
+
+  let th = '<thead><tr><th>Workload</th><th>Int8 alone</th><th>N-gram (fp16)</th><th>Naive product</th><th>Measured both</th><th>Survival</th><th>v (int8)</th><th>Stage 10→11</th></tr></thead><tbody>';
+  rows.forEach((r) => {
+    const survPct = r.both_over_product * 100;
+    const cls = survPct < 66 ? 'num-bad' : 'num-accent';
+    th += `<tr>
+      <td>${wlNames[r.workload]}</td>
+      <td>${fmt(r.int8_alone, 2)}×</td>
+      <td>${fmt(r.ngram_alone_fp16, 2)}×</td>
+      <td>${fmt(r.product, 2)}×</td>
+      <td class="lbl-strong">${fmt(r.measured_both, 2)}×</td>
+      <td class="${cls}">${fmt(survPct, 1)}%</td>
+      <td>${fmt(r.v_int8, 2)}×</td>
+      <td class="num-good">+${fmt((r.new_kernel_gain - 1) * 100, 1)}%</td>
+    </tr>`;
+  });
+  $('mMultTable').innerHTML = th + '</tbody>';
+
+  const copyRow = rows[0];
+  const openRow = rows[2];
+  $('mMultNote').innerHTML = `<b>Why survival is ~${fmt(copyRow.both_over_product * 100, 0)}% on ${sz} copy (k = ${k}):</b> Naive multiplication expects ${fmt(copyRow.int8_alone, 2)} × ${fmt(copyRow.ngram_alone_fp16, 2)} = <b>${fmt(copyRow.product, 2)}×</b>, assuming int8 verifies ${k + 1} tokens for free (v = 1.0). Because actual v<sub>int8</sub> = <b>${fmt(copyRow.v_int8, 2)}×</b> (vs v<sub>fp16</sub> = ${fmt(copyRow.v_fp16, 2)}×), dividing the product by v<sub>int8</sub>/v<sub>fp16</sub> predicts ${fmt(copyRow.product / (copyRow.v_int8 / copyRow.v_fp16), 2)}× — matching the measured <b>${fmt(copyRow.measured_both, 2)}×</b>. On open prose, int8+n-gram (${fmt(openRow.measured_both, 2)}×) even falls <em>below</em> plain int8 (${fmt(openRow.int8_alone, 2)}×)!`;
+}
+
+function renderBestStack() {
+  const sz = cState.bestTarget;
+  const rows = D.stage11.best_stack.filter((r) => r.target === sz);
+  const wlNames = { copy: 'Copy', code: 'Code', open: 'Open prose' };
+
+  $('mBestKpis').innerHTML = rows.map((r) => {
+    const cls = r.workload === 'copy' ? 'b' : r.workload === 'code' ? 'c' : 'a';
+    const kTag = r.best_k > 0 ? ` (k=${r.best_k})` : '';
+    return kpi(cls, `${fmt(r.best_vs_eager, 1)}×`, `${wlNames[r.workload]}: ${r.best_setup}${kTag} — ${fmt(r.best_tok_s, 1)} tok/s`);
+  }).join('');
+
+  const groups = rows.map((r) => ({
+    label: wlNames[r.workload],
+    bars: [
+      { name: 'fp16 eager plain', v: r.fp16_eager_tok_s, color: 'var(--muted)', tip: `${sz} ${r.workload} — fp16 eager plain: ${fmt(r.fp16_eager_tok_s, 1)} tok/s (1.0×)` },
+      { name: 'int8 graph plain', v: r.int8_plain_tok_s, color: 'var(--c-c)', tip: `${sz} ${r.workload} — int8 graph plain: ${fmt(r.int8_plain_tok_s, 1)} tok/s (${fmt(r.int8_plain_vs_eager, 2)}×)` },
+      { name: `fp16 graph + n-gram (k=${r.fp16_spec_k})`, v: r.fp16_spec_tok_s, color: 'var(--c-b)', tip: `${sz} ${r.workload} — fp16 graph + n-gram k=${r.fp16_spec_k}: ${fmt(r.fp16_spec_tok_s, 1)} tok/s (${fmt(r.fp16_spec_vs_eager, 2)}×)` },
+      { name: `int8 graph + n-gram (k=${r.int8_spec_k})`, v: r.int8_spec_tok_s, color: 'var(--c-a)', tip: `${sz} ${r.workload} — int8 graph + n-gram k=${r.int8_spec_k}: ${fmt(r.int8_spec_tok_s, 1)} tok/s (${fmt(r.int8_spec_vs_eager, 2)}×)` }
+    ]
+  }));
+
+  groupedBarChart($('mBestChart'), groups, {
+    w: 680,
+    h: 255,
+    fmtV: (v) => fmt(v, 0),
+    yTitle: `End-to-end single-stream throughput on Tesla T4 (tok/s, ${sz})`
+  });
+
+  let th = '<thead><tr><th>Model</th><th>Workload</th><th>Winning stack</th><th>Throughput</th><th>vs fp16 eager</th><th>vs fp16 graph</th><th>Runner-up</th></tr></thead><tbody>';
+  D.stage11.best_stack.forEach((r) => {
+    const kTag = r.best_k > 0 ? ` k=${r.best_k}` : '';
+    const runner = r.best_setup.startsWith('fp16')
+      ? `int8+ngram k=${r.int8_spec_k} (${fmt(r.int8_spec_tok_s, 1)} tok/s)`
+      : `int8+ngram k=${r.int8_spec_k} (${fmt(r.int8_spec_tok_s, 1)} tok/s)`;
+    const hl = r.target === sz ? ' style="background:var(--surface-2)"' : '';
+    th += `<tr${hl}>
+      <td><b>${r.target}</b></td>
+      <td>${wlNames[r.workload]}</td>
+      <td><code>${esc(r.best_setup + kTag)}</code></td>
+      <td class="num-good">${fmt(r.best_tok_s, 1)} tok/s</td>
+      <td class="num-good">${fmt(r.best_vs_eager, 2)}×</td>
+      <td>${fmt(r.best_vs_graph, 2)}×</td>
+      <td class="small">${esc(runner)}</td>
+    </tr>`;
+  });
+  $('mBestTable').innerHTML = th + '</tbody>';
+}
+
+bindSeg('mInt8Metric', (v) => { cState.int8Metric = v; renderInt8Win(); });
+bindSeg('mBlockTarget', (v) => { cState.blockTarget = v; renderBlockCost(); });
+bindSeg('mMultTarget', (v) => { cState.multTarget = v; renderNonComposition(); });
+bindSeg('mMultK', (v) => { cState.multK = Number(v); renderNonComposition(); });
+bindSeg('mBestTarget', (v) => { cState.bestTarget = v; renderBestStack(); });
+
+/* ---------- Lazy/eager tab init at END of IIFE (no TDZ on #hash deep-link) ---------- */
+const rendered = {};
+function ensureTab(pid) {
+  if (pid === 'p1') {
+    if (!rendered.p1) {
+      rendered.p1 = true;
+      rebuildTrace('start');
+      renderVerifyCost();
+    }
+  } else if (pid === 'p2') {
+    stopPlay();
+    if (!rendered.p2) {
+      rendered.p2 = true;
+      syncLawInputs();
+      renderLaw();
+      renderCostRatioChart();
+      renderScoreboard();
+    }
+  } else if (pid === 'p3') {
+    stopPlay();
+    if (!rendered.p3) {
+      rendered.p3 = true;
+      renderInt8Win();
+      renderBlockCost();
+      renderNonComposition();
+      renderBestStack();
+    }
+  }
+}
+
+if (window.mlViz && window.mlViz.initTabs) {
+  window.mlViz.initTabs({
+    tablistId: 'tabs',
+    slugs: { p1: 'trace', p2: 'law', p3: 'compose' },
+    onSelect: ensureTab
+  });
+} else {
+  ensureTab('p1');
+}
+})();
+</script>
+</body>
+</html>

@@ -20,14 +20,22 @@ def pick(rows, keys, nd=4):
     return out
 
 def main(d):
-    s12, s3, s4, s5, vc = (
+    s12, s3, s4, s5, s12e, s13, s14, vc = (
         load(d, n)
-        for n in ("stage1_2.json", "stage3.json", "stage4.json", "stage5.json", "vllm_compare.json")
+        for n in (
+            "stage1_2.json",
+            "stage3.json",
+            "stage4.json",
+            "stage5.json",
+            "stage12.json",
+            "stage13.json",
+            "stage14.json",
+            "vllm_compare.json",
+        )
     )
     rf = s3["roofline"]
     ext = s12["extended"]
     r12 = s12["roofline"]
-    # Combine short table (16..64), extended sweep (128, 256, 512), and targeted probe (300..440) sorted by n_new
     xover_pts = (
         pick([r for r in s12["table"] if r["n_new"] < 128], ("n_new", "naive_tok_s", "cached_tok_s", "speedup_x"))
         + pick(ext["n_new_sweep"], ("n_new", "naive_tok_s", "cached_tok_s", "speedup_x"))
@@ -35,6 +43,15 @@ def main(d):
     )
     xover_pts.sort(key=lambda r: r["n_new"])
     bs_ref = next((r for r in s5["block_size"] if not r.get("block_size")), None)
+
+    s13_abl = [
+        r for r in s13["load"]
+        if r["rate"] == 8 and "(repeat)" not in r.get("system", "")
+    ]
+    s14_abl = [
+        r for r in s14["load"]
+        if r["rate"] == 8 and "(repeat)" not in r.get("system", "")
+    ]
 
     data = {
         "source": "chizkidd/mini-vllm results/*.json, Tesla T4",
@@ -54,6 +71,7 @@ def main(d):
         "ceiling": pick(rf["points"], ("B", "ceiling_agg_tok_s", "pct_of_ceiling")),
         "closed": pick(s4["closed"], ("B", "policy", "goodput_tok_s", "lat_mean_s", "lat_p99_s", "ttft_mean_s")),
         "load": pick(s4["load"], ("rate", "policy", "goodput_tok_s", "lat_p50_s", "lat_p99_s", "ttft_p50_s", "utilization")),
+        "prefill_budget": pick(s4["prefill_budget"], ("max_prefills", "goodput_tok_s", "ttft_p50_s", "ttft_p99_s", "gap_p99_ms", "gap_max_ms")),
         "mem": pick(s5["memory"], ("budget_slots", "policy", "pool_mib", "goodput_tok_s", "lat_p50_s", "mean_running", "kv_fill")),
         "kv_breakdown": pick(s5["kv_breakdown"], ("budget_slots", "policy", "stored", "reserved_empty", "rounding", "not_handed_out")),
         "block_size": pick(
@@ -62,6 +80,11 @@ def main(d):
         ),
         "block_size_ref": pick([bs_ref], ("goodput_tok_s", "itl_p50_ms", "kv_fill"))[0] if bs_ref else None,
         "vllm_load": pick(vc["load"], ("system", "size", "rate", "tpot_p50_ms", "ttft_p50_s", "goodput_tok_s", "req_s", "slo_attainment")),
+        "s12_modes": pick(s12e["modes"], ("size", "rate", "mode", "tpot_p50_ms", "tpot_p99_ms", "goodput_tok_s", "tpot_vs_eager")),
+        "s13_http": pick(s13["http"]["rows"], ("size", "rate", "tpot_p50_ms", "ttft_p50_s", "goodput_tok_s", "slo_attainment")),
+        "s13_ablation": pick(s13_abl, ("size", "variant", "system", "tpot_p50_ms", "goodput_tok_s", "slo_attainment")),
+        "s14_http": pick(s14["http"]["rows"], ("size", "rate", "tpot_p50_ms", "ttft_p50_s", "goodput_tok_s", "slo_attainment")),
+        "s14_ablation": pick(s14_abl, ("size", "variant", "system", "tpot_p50_ms", "goodput_tok_s", "slo_attainment")),
         "latency": pick(vc["latency"], ("size", "workload", "system", "tpot_ms", "ttft_ms", "speedup_vs_hf")),
         "capacity": vc["capacity"],
         "slo": vc["config"]["slo"],
