@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+*.inline.html
+.DS_Store

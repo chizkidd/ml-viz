@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlashAttention Tiling</title>
 <meta name="description" content="Step through FlashAttention tile by tile, watch the online softmax rescale itself, and see why it moves far less data than naive attention.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="FlashAttention Tiling — ml-viz">
+<meta property="og:description" content="Step through FlashAttention tile by tile, watch online softmax rescale in one pass, and compare HBM traffic against naive attention.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/flashattention-tiling/">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="../shared/theme.css">
 <style>
   .split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 14px; align-items: start; }
@@ -21,6 +26,7 @@
   .counter { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
   .row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 </style>
+<script src="../shared/ui.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -104,7 +110,7 @@
       <h2>How much data moves through slow memory? <span class="badge published">model, not a benchmark</span></h2>
       <div class="small">Counts reads and writes to GPU main memory (HBM) per attention head, using the I/O analysis from the FlashAttention paper. The arithmetic is identical for both methods, only the traffic differs.</div>
       <div class="controls" style="margin-top:12px">
-        <div class="ctl"><label>Sequence length N <span class="val" id="vN"></span></label><input type="range" id="tN" min="0" max="100" value="60"></div>
+        <div class="ctl"><label for="tN">Sequence length N <span class="val" id="vN"></span></label><input type="range" id="tN" min="0" max="100" value="60"></div>
         <div class="ctl" style="min-width:auto"><label>Head dimension d</label><div class="seg" id="tD"><button data-v="64" aria-pressed="true">64</button><button data-v="128" aria-pressed="false">128</button></div></div>
         <div class="ctl" style="min-width:auto"><label>On-chip memory per block</label><div class="seg" id="tM"><button data-v="64" aria-pressed="false">64 KB</button><button data-v="128" aria-pressed="true">128 KB</button><button data-v="192" aria-pressed="false">192 KB</button></div></div>
       </div>
@@ -128,17 +134,8 @@ const fmt = (x, d = 2) => (x === -Infinity ? '-inf' : x === Infinity ? 'inf' : N
 const f2 = (x) => (x === -Infinity ? '-inf' : x.toFixed(2));
 const kpi = (cls, v, l) => `<div class="kpi ${cls || ''}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
 
-$('themeBtn').onclick = () => {
-  const cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
-};
+if (window.mlViz) window.mlViz.initTheme('themeBtn');
 const seen = {};
-document.querySelectorAll('#tabs .tab').forEach((b) => b.onclick = () => {
-  document.querySelectorAll('#tabs .tab').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
-  document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.id !== b.dataset.p; });
-  if (b.dataset.p !== 'p1') stopPlay();
-  if (!seen[b.dataset.p]) { seen[b.dataset.p] = true; if (b.dataset.p === 'p2') drawOnline(); if (b.dataset.p === 'p3') drawTraffic(); }
-});
 function seg(id, vals, cur, cb, label) {
   $(id).innerHTML = vals.map((v) => `<button data-v="${v}" aria-pressed="${String(v) === String(cur)}">${label ? label(v) : v}</button>`).join('');
   $(id).querySelectorAll('button').forEach((b) => b.onclick = () => { $(id).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); cb(b.dataset.v); });
@@ -357,6 +354,16 @@ function drawTraffic() {
 }
 
 build();
+if (window.mlViz) {
+  window.mlViz.initTabs({
+    tablistId: 'tabs',
+    slugs: { p1: 'tiles', p2: 'softmax', p3: 'traffic' },
+    onSelect: (pid) => {
+      if (pid !== 'p1') stopPlay();
+      if (!seen[pid]) { seen[pid] = true; if (pid === 'p2') drawOnline(); if (pid === 'p3') drawTraffic(); }
+    },
+  });
+}
 })();
 </script>
 </body>

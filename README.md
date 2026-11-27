@@ -4,9 +4,9 @@ Interactive explainers for ML, RL and LLM inference, built from real experiments
 
 | Folder | What it is | Status |
 |---|---|---|
-| `inference-playground/` | Continuous batching, paged KV cache, decode roofline, engine vs vLLM. Real Tesla T4 numbers from [minivllm](https://github.com/chizkidd/mini-vllm). | ready |
+| `inference-playground/` | Continuous batching (closed + open loop), paged KV cache + measured pool breakdown, decode roofline + KV crossover, engine vs vLLM. Real Tesla T4 numbers from [mini-vllm](https://github.com/chizkidd/mini-vllm). | ready |
 | `flashattention-tiling/` | Tile-by-tile FlashAttention with online softmax, verified against naive attention in the browser. Single file. | ready |
-| `igbo-tone-loss/` | Tone-mark loss in ASR on 21 Igbo clips: clip explorer, scoreboard with bootstrap intervals, mark types, a position-by-position alignment estimate with a confusion matrix, and method checks (resampling unit, CER vs tone loss, limitations). Data from [omniASR-igbo-blindspots](https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots). | ready |
+| `igbo-tone-loss/` | Tone and dot-below mark probe on 21 single-speaker clips: clip explorer, scoreboard, mark types, alignment estimate with confusion matrix, Levenshtein CER/WER profiles, and method checks. Data from [omniASR-igbo-blindspots](https://huggingface.co/datasets/Chiz/omniASR-igbo-blindspots) / [igbo-asr-tonal-evaluation](https://github.com/chizkidd/igbo-asr-tonal-evaluation). | ready |
 | `td-lambda/` | TD(lambda) on the 19-state random walk (step through eligibility traces, sweep lambda and alpha), the w/2w example, and Baird's counterexample with toggles for function approximation, bootstrapping, off-policy data and TDC. Simulated live with fixed seeds. | ready |
 
 ## Publish with GitHub Pages
@@ -14,25 +14,42 @@ Interactive explainers for ML, RL and LLM inference, built from real experiments
 2. Settings, Pages, Source: *Deploy from a branch*, branch `main`, folder `/ (root)`.
 3. The site appears at `https://<user>.github.io/ml-viz/`.
 
-Every page loads `shared/theme.css` through a relative link, so keep the folder layout as is.
+Every page loads `shared/theme.css` and `shared/ui.js` (persisted dark/light theme, accessible ARIA tabs with `#hash` deep-linking, reduced-motion check) through relative links, so keep the folder layout as is.
 
-## Inference playground data
-Everything labelled *measured* comes from `inference-playground/data.json`, extracted from minivllm's `results/*.json`:
+## Build & verify everything
 
 ```bash
-python3 inference-playground/extract_data.py /path/to/minivllm/results > inference-playground/data.json
+sh scripts/check.sh                # rebuilds all pages and runs all 4 test suites
+sh scripts/check.sh --check-clean  # also fails if generated index.html drifted (run in CI)
+```
+
+Requires `python3`, `node`, and `numpy` (for the `td-lambda` Node-vs-NumPy cross-check).
+
+## Inference playground data
+Everything labelled *measured* comes from `inference-playground/data.json`, extracted from `mini-vllm`'s `results/*.json`:
+
+```bash
+python3 inference-playground/extract_data.py /path/to/mini-vllm/results > inference-playground/data.json
 python3 inference-playground/build.py          # rewrites index.html
 ```
 
-Everything labelled *simulated* comes from `inference-playground/src/sim.js`. Its four constants were fitted to the stage 4 runs; the calibration table on the first tab shows how close it gets. To re-check it in node: `node -e "require('./inference-playground/src/sim.js')"`.
+Everything labelled *simulated* comes from `inference-playground/src/sim.js`. Its four constants were fitted to the stage 4 runs; the calibration table on the first tab shows how close it gets. To check it in node: `node inference-playground/tests/test_sim.js`.
 
-`python3 inference-playground/build.py --inline` also writes `index.inline.html`, the same page with the theme inlined, handy for sharing as a single file.
+`python3 <folder>/build.py --inline` also writes `index.inline.html` (with `shared/theme.css` and `shared/ui.js` inlined) for sharing as a single standalone file.
 
 ## Adding a visualization
-Create a folder, link `../shared/theme.css`, reuse the tokens (`--c-a`, `--c-b`, badges, tabs, cards), and add a card to the root `index.html`.
+Create a folder, link `../shared/theme.css` and `../shared/ui.js`, reuse the tokens (`--c-a`, `--c-b`, badges, tabs, cards), and add a card to the root `index.html`.
 
 ## Igbo explorer data
-`igbo-tone-loss/rows.py` holds the 21 dataset rows (text only, no audio). `python3 igbo-tone-loss/build.py` rebuilds `index.html` from `template.html`. Mark counts use a rule that reproduces the dataset's expected and produced counts for all 21 rows: count each letter carrying a grave, acute, macron or dot below.
+`igbo-tone-loss/data.json` is extracted directly from the audited evaluation repo (`data/metadata.csv` + `data/analysis_groups.csv`, verified against `results/canonical_results.csv`):
+
+```bash
+python3 igbo-tone-loss/extract_data.py /path/to/igbo-asr-tonal-evaluation-research > igbo-tone-loss/data.json
+python3 igbo-tone-loss/build.py
+node igbo-tone-loss/tests/test_metrics.js
+```
+
+Mark counts reproduce the dataset's expected and produced counts for all 21 clips (count each letter carrying a grave, acute, macron or dot-below), and Levenshtein CER/WER profiles follow `docs/ANALYSIS_SPEC.md`.
 
 ## TD(lambda) page
 `td-lambda/src/sim.js` holds all the simulation code (seeded RNG, TD(lambda) with accumulating or replacing traces, the lambda sweep, Baird's counterexample with semi-gradient TD(0) and TDC). `python3 td-lambda/build.py` inlines it into `td-lambda/template.html` and writes `index.html`.

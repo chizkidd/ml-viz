@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ml-viz</title>
 <meta name="description" content="Interactive explainers for ML, RL and LLM inference, built from real experiments.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ml-viz — Interactive ML, RL &amp; LLM Inference Explainers">
+<meta property="og:description" content="Interactive explainers for ML, RL and LLM inference, built from real experiments. Static HTML, CSS and JavaScript, no framework and no tracking.">
+<meta property="og:url" content="https://chizkidd.github.io/ml-viz/">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="shared/theme.css">
 <style>
   .cards { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; }
@@ -18,16 +23,17 @@
   .vcard.soon { opacity: .62; cursor: default; }
   .vcard.soon:hover { transform: none; }
 </style>
+<script src="shared/ui.js"></script>
 </head>
 <body>
 <div class="wrap">
-  <div class="topbar"><a href="https://chizkidd.github.io">chizkidd.github.io</a><span class="sp"></span><a href="https://github.com/chizkidd/ml-viz" target="_blank" rel="noopener">GitHub</a><button class="btn" id="themeBtn" type="button">Theme</button></div>
+  <div class="topbar"><a href="https://chizkidd.github.io">chizkidd.github.io</a><span class="sp"></span><a href="https://github.com/chizkidd/ml-viz" target="_blank" rel="noopener">GitHub</a><button class="btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button></div>
   <h1>ml-viz</h1>
   <p class="lede">Interactive explainers for ML, RL and LLM inference. Each one is built from an experiment I actually ran, and every chart says whether its numbers are measured or simulated.</p>
   <div class="cards">
     <a class="card vcard" href="inference-playground/">
       <div class="tag">LLM inference</div><h2>Inference Playground</h2>
-      <p>Continuous batching, paged KV cache, the decode roofline and an engine-vs-vLLM scoreboard, on real Tesla T4 numbers from minivllm.</p>
+      <p>Continuous batching, paged KV cache, the decode roofline, KV crossover, and an engine-vs-vLLM scoreboard, on real Tesla T4 numbers from mini-vllm.</p>
       <span class="badge measured">measured</span> <span class="badge simulated">simulated</span>
     </a>
     <a class="card vcard" href="flashattention-tiling/">
@@ -37,7 +43,7 @@
     </a>
     <a class="card vcard" href="igbo-tone-loss/">
       <div class="tag">Speech</div><h2>Igbo tone-loss explorer</h2>
-      <p>What a speech recognizer does to Igbo tone marks, clip by clip, with four ways to score it and honest error bars on 21 recordings.</p>
+      <p>What a speech recognizer does to Igbo tone and dot-below marks, clip by clip across 21 single-speaker recordings, with Levenshtein CER/WER profiles and alignment checks.</p>
       <span class="badge measured">measured</span> <span class="badge simulated">computed live</span>
     </a>
     <a class="card vcard" href="td-lambda/">
@@ -49,10 +55,7 @@
   <footer class="site">Plain HTML, CSS and JavaScript. No build step needed to view; no tracking.</footer>
 </div>
 <script>
-document.getElementById('themeBtn').onclick = function () {
-  var cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
-};
+if (window.mlViz) window.mlViz.initTheme('themeBtn');
 </script>
 </body>
 </html>
